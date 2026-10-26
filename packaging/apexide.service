@@ -1,0 +1,11 @@
+[Unit]
+Description=apexide - SteelSeries Apex keyboard daemon
+Documentation=https://github.com/estridell/apexide
+
+[Service]
+ExecStart=%h/.cargo/bin/apexide daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

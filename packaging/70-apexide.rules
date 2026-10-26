@@ -1,0 +1,3 @@
+# apexide: give the logged-in user access to SteelSeries Apex keyboards' hidraw nodes.
+# Install: sudo cp packaging/70-apexide.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1610|1612|1614|1618|161c|161e|1620|1622", MODE="0660", TAG+="uaccess"
