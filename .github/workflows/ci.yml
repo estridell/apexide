@@ -1,0 +1,130 @@
+# Checks every PR. Every push to main also publishes a GitHub release.
+#
+# Versions are MAJOR.MINOR.N: MAJOR.MINOR comes from the workspace version in
+# Cargo.toml, and N counts releases on that line (the next free vMAJOR.MINOR.N
+# tag). Bump the minor version in Cargo.toml (0.1.0 -> 0.2.0) to start a new
+# line at N = 0.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Superseded PR runs are cancelled. Each push to main gets its own group so
+  # none is ever cancelled or dropped from the queue: every merge is released.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to reserve the release tag
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y musl-tools
+      - name: Pick the version
+        id: version
+        run: |
+          line=$(cargo metadata --no-deps --format-version 1 --locked |
+            jq -r '.packages[] | select(.name == "apexide") | .version' | cut -d. -f1,2)
+          next() {
+            last=$(git ls-remote --tags --refs origin "refs/tags/v$line.*" |
+              sed 's|.*/v||' | cut -d. -f3 | sort -n | tail -1)
+            echo "$line.$(( ${last:--1} + 1 ))"
+          }
+          version=$(next)
+          if [ "$RELEASE" = true ]; then
+            # Reserve the tag now. Main runs are not serialized, so another run
+            # may take the same number; the push then fails and we try the next.
+            for _ in 1 2 3 4 5; do
+              git push -q origin "$GITHUB_SHA:refs/tags/v$version" && break
+              version=$(next)
+            done
+            git ls-remote --exit-code origin "refs/tags/v$version" | grep -q "^$GITHUB_SHA" ||
+              { echo "could not reserve a release tag"; exit 1; }
+            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release version: $version"
+      - name: Build
+        run: |
+          # PR builds keep the -dev version; only releases get the real one.
+          if [ "$RELEASE" = true ]; then export APEXIDE_VERSION=${{ steps.version.outputs.version }}; fi
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          mkdir dist
+          cp target/x86_64-unknown-linux-musl/release/apexide dist/apexide-x86_64-linux
+          cp packaging/70-apexide.rules packaging/apexide.service dist/
+          (cd dist && sha256sum apexide-x86_64-linux > apexide-x86_64-linux.sha256)
+          dist/apexide-x86_64-linux --version
+          file dist/apexide-x86_64-linux
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  release:
+    needs: [check, build]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Publish v${{ needs.build.outputs.version }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$TAG" \
+            --generate-notes
+          # Runs can finish out of order, leaving GitHub's Latest badge on an
+          # older release. Nothing depends on it: `apexide update` and
+          # install.sh pick the highest version from the release list.
+
+  # A run that reserved a tag but did not publish frees it again.
+  unreserve:
+    needs: [check, build, release]
+    if: always() && needs.build.outputs.tag != '' && needs.release.result != 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"

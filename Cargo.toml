@@ -11,3 +11,6 @@ repository = "https://github.com/estridell/apexide"
 [workspace.dependencies]
 apexide-core = { path = "crates/apexide-core" }
 apexide-daemon = { path = "crates/apexide-daemon" }
+
+[profile.release]
+strip = true

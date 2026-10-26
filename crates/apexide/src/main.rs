@@ -1,4 +1,5 @@
 mod client;
+mod update;
 
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -52,6 +53,11 @@ OUTPUT AND EXIT CODES
     2  invalid command line
     3  daemon not reachable (start it with `apexide daemon`)
 
+UPDATES
+  `apexide update` installs the latest GitHub release (`--check` only looks).
+  `apexide --version` prints this binary's version, `apexide status` warns
+  when the running daemon is a different version.
+
 EXAMPLES
   apexide effect wave --period-ms 2500
   apexide set wasd red esc white
@@ -69,7 +75,7 @@ Run `apexide <command> --help` for one command, or `apexide reference`
 /// and for scripts and agents (add --json).
 #[derive(Parser)]
 #[command(
-    version,
+    version = apexide_daemon::VERSION,
     propagate_version = true,
     after_help = "Run `apexide --help` for concepts, color and key syntax, and exit codes,\nor `apexide reference` for the full help of every command.",
     after_long_help = OVERVIEW
@@ -123,6 +129,28 @@ enum Cmd {
     Schema,
     /// Print the full help of every command (alias: --help-verbose).
     Reference,
+    /// Update apexide to the latest GitHub release (works without the daemon).
+    ///
+    /// Downloads the release binary, checks its SHA-256 and replaces the
+    /// running binary in place, so install apexide somewhere you can write
+    /// (the README uses ~/.local/bin). If the apexide.service user unit is
+    /// active it is restarted; a daemon started by hand keeps running the old
+    /// version until you restart it. Builds from source (version ending in
+    /// -dev) count as older than the release of the same version.
+    ///
+    /// With --json: {current, latest, update_available, release_url, updated,
+    /// and after an update path and service_restarted}.
+    #[command(
+        after_long_help = "EXAMPLES\n  apexide update --check\n  apexide update\n  apexide --version"
+    )]
+    Update {
+        /// Only report whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+        /// Reinstall the latest release even if it is not newer.
+        #[arg(long, conflicts_with = "check")]
+        force: bool,
+    },
     /// Paint every key one color and remove all per-key overrides.
     ///
     /// Same as `effect static --color COLOR` followed by `clear`.
@@ -449,6 +477,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Cmd::Schema => (apexide_daemon::api::schema(), |v| serde_json::to_string_pretty(v).unwrap()),
         Cmd::Reference => (Value::String(reference()), |v| v.as_str().unwrap_or_default().to_string()),
+        Cmd::Update { check, force } => (update::run(check, force)?, update::describe),
         Cmd::Raw { method, path, body } => {
             let body = match body {
                 None => Body::None,
@@ -624,6 +653,14 @@ fn fmt_oled(v: &Value) -> String {
 
 fn fmt_status(v: &Value) -> String {
     let mut out = String::new();
+    if let Some(daemon) = v["version"].as_str()
+        && daemon != apexide_daemon::VERSION
+    {
+        out += &format!(
+            "daemon: {daemon} (this CLI is {}; restart the daemon)\n",
+            apexide_daemon::VERSION
+        );
+    }
     if v["connected"].as_bool() == Some(true) {
         let d = &v["device"];
         out += &format!(

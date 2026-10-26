@@ -22,6 +22,14 @@ use tokio::net::{TcpListener, UnixListener, UnixStream};
 
 use crate::{api::App, engine::Engine, state::Shared, store::Store};
 
+/// The release version (`0.1.7`), set by CI through `APEXIDE_VERSION` at build
+/// time. Local builds report the workspace version with a `-dev` suffix, which
+/// sorts below every release of that version.
+pub const VERSION: &str = match option_env!("APEXIDE_VERSION") {
+    Some(v) => v,
+    None => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
+};
+
 pub struct ServeOptions {
     pub socket: PathBuf,
     /// Also listen on this TCP address (keep it on localhost).

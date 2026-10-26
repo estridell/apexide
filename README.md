@@ -33,20 +33,46 @@ crates/
 - **Transport.** HTTP on the Unix socket `$XDG_RUNTIME_DIR/apexide.sock`, with optional
   TCP (`--tcp 127.0.0.1:7171`).
 
-## Setup
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/estridell/apexide/main/install.sh | sh
+```
+
+This downloads the latest release binary (static, x86_64) to `~/.local/bin/apexide`,
+installs the udev rule so your user can access the keyboard (asks for sudo), and
+enables the `apexide` systemd user service. Skip parts with
+`| sh -s -- --no-udev --no-service`, or pick another directory with `APEXIDE_BIN_DIR`.
+
+```sh
+apexide update --check                  # is there a newer release?
+apexide update                          # install it and restart the service
+```
+
+### From source
 
 ```sh
 # 1. Let your user access the keyboard (no root needed afterwards)
 sudo cp packaging/70-apexide.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
 
-# 2. Install
-cargo install --path crates/apexide
+# 2. Install to ~/.local/bin
+cargo install --path crates/apexide --root ~/.local
 
 # 3. Run the daemon (foreground), or as a user service
 apexide daemon
 cp packaging/apexide.service ~/.config/systemd/user/ && systemctl --user enable --now apexide
 ```
+
+Source builds report a `-dev` version (`0.1.0-dev`), which `apexide update` treats as
+older than any release on that line.
+
+### Releases
+
+Every merge to `main` publishes a GitHub release. Versions are `MAJOR.MINOR.N`:
+`MAJOR.MINOR` comes from the workspace version in `Cargo.toml` and `N` counts releases on
+that line. To start a new line, change `0.1.0` to `0.2.0` in `Cargo.toml` in a PR; the
+merge releases `v0.2.0`, and the next one `v0.2.1`.
 
 ## CLI
 

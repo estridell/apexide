@@ -187,6 +187,7 @@ async fn status(st: St) -> Res {
     let profiles = st.store.list_profiles().unwrap_or_default();
     let s = st.shared.lock().unwrap();
     Ok(Json(json!({
+        "version": crate::VERSION,
         "connected": s.device.is_some(),
         "device": s.device,
         "error": s.last_error,
