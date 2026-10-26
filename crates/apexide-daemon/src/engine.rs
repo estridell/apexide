@@ -13,9 +13,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use apexide_core::{Frame, KeyCode, Keyboard, Rgb, keys::KeyDef};
+use apexide_core::{Frame, Keyboard, keys::KeyDef};
 
-use crate::{effects, screen, state::Shared};
+use crate::{
+    effects::{self, LightingFrame},
+    screen,
+    state::Shared,
+};
 
 const TICK: Duration = Duration::from_millis(33);
 const RECONNECT_EVERY: Duration = Duration::from_secs(2);
@@ -51,11 +55,12 @@ impl Engine {
     }
 }
 
+/// What was last written to the keyboard. `None` means unknown, which
+/// forces a write.
 #[derive(Default)]
 struct Output {
-    colors: Option<Vec<(KeyCode, Rgb)>>,
+    lighting: Option<LightingFrame>,
     oled: Option<Frame>,
-    onboard_sent: bool,
     written: Option<Instant>,
 }
 
@@ -116,7 +121,7 @@ fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>) {
             );
             let oled_ms = (now - s.oled_since.unwrap_or(epoch)).as_millis() as u64;
             let oled = screen::render(&s.settings.oled, s.notification.as_ref(), &mut sys, oled_ms);
-            s.frame_colors = colors.clone().unwrap_or_default();
+            s.frame_lighting = colors.clone();
             s.frame_oled = oled.clone();
             (colors, oled)
         };
@@ -148,26 +153,44 @@ fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>) {
 fn write(
     kb: &mut Keyboard,
     out: &mut Output,
-    colors: Option<Vec<(KeyCode, Rgb)>>,
+    lighting: LightingFrame,
     oled: Option<Frame>,
 ) -> apexide_core::device::Result<()> {
     let refresh = out.written.is_none_or(|t| t.elapsed() >= REFRESH_EVERY);
-    match colors {
-        Some(c) => {
-            if refresh || out.colors.as_ref() != Some(&c) {
-                kb.set_colors(&c)?;
-                out.colors = Some(c);
-                out.onboard_sent = false;
+    let prev = out.lighting.take();
+    let changed = prev.as_ref() != Some(&lighting);
+    match &lighting {
+        LightingFrame::Onboard => {
+            if changed {
+                kb.onboard_lighting()?;
             }
         }
-        None => {
-            if !out.onboard_sent {
-                kb.onboard_lighting()?;
-                out.onboard_sent = true;
-                out.colors = None;
+        LightingFrame::Full(c) => {
+            if changed || refresh {
+                kb.set_colors(c)?;
+            }
+        }
+        LightingFrame::Overlay(c) => {
+            if changed || refresh {
+                // A key can only be handed back to onboard lighting by
+                // restoring the whole board, so do that whenever a key we set
+                // earlier is no longer part of the overlay.
+                let restore = match &prev {
+                    None | Some(LightingFrame::Full(_)) => true,
+                    Some(LightingFrame::Onboard) => false,
+                    Some(LightingFrame::Overlay(p)) => {
+                        p.iter().any(|(k, _)| !c.iter().any(|(n, _)| n == k))
+                    }
+                };
+                if restore {
+                    kb.onboard_lighting()?;
+                }
+                kb.set_colors(c)?;
             }
         }
     }
+    out.lighting = Some(lighting);
+
     match oled {
         Some(f) => {
             if refresh || out.oled.as_ref() != Some(&f) {
@@ -175,7 +198,13 @@ fn write(
                 out.oled = Some(f);
             }
         }
-        None => out.oled = None,
+        // Clear whatever we drew last so it does not linger after a
+        // notification expires or the screen is released.
+        None => {
+            if out.oled.take().is_some() {
+                kb.draw_oled(&Frame::new())?;
+            }
+        }
     }
     if refresh {
         out.written = Some(Instant::now());

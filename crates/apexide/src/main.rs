@@ -139,7 +139,7 @@ enum OledCmd {
     Sysinfo,
     /// Turn the screen off.
     Blank,
-    /// Stop driving the screen.
+    /// Clear the screen and stop drawing on it.
     Release,
     /// Pop up a message for a while, then return to the current mode.
     Notify {
@@ -484,11 +484,17 @@ fn fmt_frame(v: &Value) -> String {
     if v["mode"] == "onboard" {
         return "onboard lighting (keyboard controls the LEDs)".into();
     }
-    v["keys"]
+    let header = if v["mode"] == "overlay" {
+        "onboard lighting, with these keys set by apexide:\n"
+    } else {
+        ""
+    };
+    let keys = v["keys"]
         .as_object()
         .into_iter()
         .flatten()
         .map(|(k, c)| format!("{k:<14} {}", c.as_str().unwrap_or("")))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    format!("{header}{keys}")
 }

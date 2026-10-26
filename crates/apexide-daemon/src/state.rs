@@ -102,7 +102,7 @@ impl Default for Lighting {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OledMode {
-    /// apexide does not touch the OLED.
+    /// apexide clears the OLED once and then stops drawing on it.
     #[default]
     Release,
     /// Screen off.
@@ -178,8 +178,8 @@ pub struct Shared {
     /// Set by the render thread.
     pub device: Option<DeviceInfo>,
     pub last_error: Option<String>,
-    /// Last colors and OLED frame computed by the render thread.
-    pub frame_colors: Vec<(KeyCode, Rgb)>,
+    /// Last lighting and OLED frame computed by the render thread.
+    pub frame_lighting: crate::effects::LightingFrame,
     pub frame_oled: Option<apexide_core::Frame>,
     /// When the OLED mode last changed; animations play from here.
     pub oled_since: Option<Instant>,

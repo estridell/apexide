@@ -327,16 +327,20 @@ async fn flash(st: St, J(r): J<FlashReq>) -> Res {
 }
 
 async fn lighting_frame(st: St) -> Res {
+    use crate::effects::LightingFrame;
     let s = st.shared.lock().unwrap();
-    if s.frame_colors.is_empty() {
-        return Ok(Json(json!({ "mode": "onboard", "keys": {} })));
-    }
+    let mode = match s.frame_lighting {
+        LightingFrame::Onboard => "onboard",
+        LightingFrame::Full(_) => "software",
+        LightingFrame::Overlay(_) => "overlay",
+    };
     let keys: BTreeMap<String, Rgb> = s
-        .frame_colors
+        .frame_lighting
+        .colors()
         .iter()
         .map(|(k, c)| (k.to_string(), *c))
         .collect();
-    Ok(Json(json!({ "mode": "software", "keys": keys })))
+    Ok(Json(json!({ "mode": mode, "keys": keys })))
 }
 
 async fn get_oled(st: St) -> Res {
@@ -520,7 +524,7 @@ async fn schema() -> Res {
             "onboard": {}
         },
         "oled_modes": {
-            "release": "apexide leaves the OLED alone",
+            "release": "apexide clears the OLED once and stops drawing on it",
             "blank": "screen off",
             "text": { "text": "string", "align": "left|center|right" },
             "image": "POST raw PNG/JPEG/BMP/GIF bytes to /v1/oled/image?fit=contain|cover|stretch&dither=true&invert=false&threshold=128",

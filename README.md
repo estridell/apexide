@@ -69,7 +69,7 @@ apexide oled clock -f '%H:%M:%S'
 apexide oled sysinfo                    # CPU/RAM bars
 apexide oled notify "Build passed" -d 3000
 apexide oled preview                    # ASCII art of what the screen shows
-apexide oled release                    # give the screen back to the keyboard
+apexide oled release                    # clear the screen and stop drawing on it
 
 apexide profile save gaming
 apexide profile apply gaming
