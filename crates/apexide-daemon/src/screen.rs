@@ -24,7 +24,8 @@ pub struct SysSampler {
 }
 
 impl SysSampler {
-    fn refresh(&mut self) {
+    /// Sample /proc, at most once a second.
+    pub fn refresh(&mut self) {
         if self.last.is_some_and(|t| t.elapsed().as_millis() < 1000) {
             return;
         }
@@ -94,7 +95,7 @@ fn bar(frame: &mut Frame, label: &str, value: f32, y: i32) {
 pub fn render(
     mode: &OledMode,
     notification: Option<&Notification>,
-    sys: &mut SysSampler,
+    sys: &SysSampler,
     t_ms: u64,
 ) -> Option<Frame> {
     if let Some(n) = notification {
@@ -139,7 +140,6 @@ pub fn render(
             Align::Center,
         ),
         OledMode::Sysinfo => {
-            sys.refresh();
             let mut f = Frame::new();
             bar(&mut f, "CPU", sys.cpu, 1);
             bar(&mut f, "RAM", sys.mem, 21);

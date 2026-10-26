@@ -57,6 +57,19 @@ pub enum Effect {
     Onboard,
 }
 
+impl Effect {
+    /// Whether the colors change over time, so every tick needs rendering.
+    pub fn is_animated(&self) -> bool {
+        matches!(
+            self,
+            Effect::Breathe { .. }
+                | Effect::Spectrum { .. }
+                | Effect::Wave { .. }
+                | Effect::Twinkle { .. }
+        )
+    }
+}
+
 fn default_period() -> u32 {
     3000
 }
@@ -143,6 +156,13 @@ impl OledMode {
             other => serde_json::to_value(other).unwrap_or_default(),
         }
     }
+
+    /// Whether the frame changes on its own, so every tick needs rendering.
+    /// Clock and sysinfo change at most once a second, which the regular
+    /// OLED rewrite already covers.
+    pub fn is_animated(&self) -> bool {
+        matches!(self, OledMode::Image { frames, .. } if frames.len() > 1)
+    }
 }
 
 /// Everything that is saved to disk and in profiles.
@@ -152,6 +172,9 @@ pub struct Settings {
     pub lighting: Lighting,
     pub oled: OledMode,
 }
+
+/// Most flashes active at once. Adding one beyond this drops the oldest.
+pub const MAX_FLASHES: usize = 64;
 
 /// A temporary highlight that expires on its own.
 #[derive(Clone, Debug)]
@@ -184,4 +207,22 @@ pub struct Shared {
     pub frame_oled: Option<apexide_core::Frame>,
     /// When the OLED mode last changed; animations play from here.
     pub oled_since: Option<Instant>,
+}
+
+impl Shared {
+    /// Whether the output changes from tick to tick without any API call.
+    pub fn animated(&self) -> bool {
+        self.settings.lighting.effect.is_animated()
+            || self.flashes.iter().any(|f| f.blink_ms.is_some())
+            || (self.notification.is_none() && self.settings.oled.is_animated())
+    }
+
+    /// When the next flash or notification runs out.
+    pub fn next_expiry(&self) -> Option<Instant> {
+        self.flashes
+            .iter()
+            .map(|f| f.until)
+            .chain(self.notification.as_ref().map(|n| n.until))
+            .min()
+    }
 }

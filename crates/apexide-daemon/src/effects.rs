@@ -99,6 +99,15 @@ impl LightingFrame {
     }
 }
 
+/// What the active flashes do to one key this tick.
+#[derive(Clone, Copy)]
+enum FlashHit {
+    /// A flash in its on phase shows this color.
+    On(Rgb),
+    /// Only blinking flashes in their off phase cover the key.
+    Off,
+}
+
 /// Final colors with overrides, flashes and brightness applied.
 ///
 /// With the onboard effect, only keys that have an override or an active
@@ -115,28 +124,38 @@ pub fn render(
 ) -> LightingFrame {
     let onboard = lighting.effect == Effect::Onboard;
     let brightness = lighting.brightness.min(100) as f32 / 100.0;
-    let colors: Vec<_> =
-        keys.iter()
-            .filter_map(|key| {
-                let mut c = effect_color(&lighting.effect, key, size, t_ms);
-                if let Some(o) = lighting.keys.get(&key.code) {
-                    c = Some(*o);
-                }
-                for f in flashes.iter().filter(|f| f.keys.contains(&key.code)) {
-                    let on = match f.blink_ms {
-                        Some(b) => ((now - f.started).as_millis() as u64 / b.max(1) as u64)
-                            .is_multiple_of(2),
-                        None => true,
-                    };
-                    if on {
-                        c = Some(f.color);
-                    } else if c.is_none() {
-                        c = Some(Rgb::BLACK);
-                    }
-                }
-                c.map(|c| (key.code, c.scale(brightness)))
-            })
-            .collect();
+    // Resolve the flashes per key code first, so the cost stays linear in
+    // the number of flashes. The newest flash that is on wins.
+    let mut hits: [Option<FlashHit>; 256] = [None; 256];
+    for f in flashes {
+        let on = match f.blink_ms {
+            Some(b) => ((now - f.started).as_millis() as u64 / b.max(1) as u64).is_multiple_of(2),
+            None => true,
+        };
+        for k in &f.keys {
+            let hit = &mut hits[k.0 as usize];
+            if on {
+                *hit = Some(FlashHit::On(f.color));
+            } else if hit.is_none() {
+                *hit = Some(FlashHit::Off);
+            }
+        }
+    }
+    let colors: Vec<_> = keys
+        .iter()
+        .filter_map(|key| {
+            let mut c = effect_color(&lighting.effect, key, size, t_ms);
+            if let Some(o) = lighting.keys.get(&key.code) {
+                c = Some(*o);
+            }
+            match hits[key.code.0 as usize] {
+                Some(FlashHit::On(f)) => c = Some(f),
+                Some(FlashHit::Off) => c = c.or(Some(Rgb::BLACK)),
+                None => {}
+            }
+            c.map(|c| (key.code, c.scale(brightness)))
+        })
+        .collect();
     match (onboard, colors.is_empty()) {
         (true, true) => LightingFrame::Onboard,
         (true, false) => LightingFrame::Overlay(colors),
@@ -245,6 +264,45 @@ mod tests {
         };
         assert_eq!(at(50), Rgb::new(255, 0, 0));
         assert_eq!(at(150), Rgb::BLACK);
+    }
+
+    #[test]
+    fn newest_lit_flash_wins() {
+        let l = Lighting {
+            effect: Effect::Static {
+                color: Rgb::new(0, 0, 255),
+            },
+            ..Default::default()
+        };
+        let a = keys::find("a").unwrap().code;
+        let start = Instant::now();
+        let flash = |color, blink_ms| Flash {
+            keys: vec![a, a],
+            color,
+            started: start,
+            until: start + Duration::from_secs(5),
+            blink_ms,
+        };
+        let red = Rgb::new(255, 0, 0);
+        let green = Rgb::new(0, 255, 0);
+        let at = |flashes: &[Flash], ms| {
+            let frame = render(
+                &l,
+                flashes,
+                &tkl(),
+                (18.0, 6.0),
+                0,
+                start + Duration::from_millis(ms),
+            );
+            frame.colors().iter().find(|(c, _)| *c == a).unwrap().1
+        };
+        // A newer flash covers an older one while it is lit...
+        let both = [flash(red, None), flash(green, Some(100))];
+        assert_eq!(at(&both, 50), green);
+        // ...and lets it show through during its off phase.
+        assert_eq!(at(&both, 150), red);
+        // With nothing lit underneath, the effect color shows.
+        assert_eq!(at(&both[1..], 150), Rgb::new(0, 0, 255));
     }
 
     #[test]

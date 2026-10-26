@@ -1,12 +1,18 @@
 //! On-disk persistence: current settings and named profiles, as JSON under
 //! `$XDG_CONFIG_HOME/apexide`.
+//!
+//! The current lighting lives in `state.json` and the OLED mode in
+//! `oled.json`, so lighting changes do not rewrite image frames.
 
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::state::Settings;
+use serde::{Serialize, de::DeserializeOwned};
+
+use crate::state::{Lighting, OledMode, Settings};
 
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -42,6 +48,10 @@ impl Store {
         self.dir.join("state.json")
     }
 
+    fn oled_path(&self) -> PathBuf {
+        self.dir.join("oled.json")
+    }
+
     fn profiles_dir(&self) -> PathBuf {
         self.dir.join("profiles")
     }
@@ -58,30 +68,65 @@ impl Store {
         Ok(self.profiles_dir().join(format!("{name}.json")))
     }
 
-    fn write_atomic(path: &Path, settings: &Settings) -> Result<(), StoreError> {
+    /// Write through a temporary file that no other writer uses, so
+    /// concurrent writes never install a half-written file.
+    fn write_atomic(path: &Path, value: &impl Serialize) -> Result<(), StoreError> {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         fs::create_dir_all(path.parent().unwrap())?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(settings)?)?;
-        fs::rename(tmp, path)?;
-        Ok(())
+        let tmp = path.with_extension(format!(
+            "json.{}-{}.tmp",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let written = fs::write(&tmp, serde_json::to_vec_pretty(value)?)
+            .and_then(|()| fs::rename(&tmp, path));
+        if written.is_err() {
+            fs::remove_file(&tmp).ok();
+        }
+        Ok(written?)
     }
 
-    fn read(path: &Path) -> Result<Settings, StoreError> {
+    fn read<T: DeserializeOwned>(path: &Path) -> Result<T, StoreError> {
         Ok(serde_json::from_slice(&fs::read(path)?)?)
+    }
+
+    /// Like [`Self::read`], but `None` if the file does not exist.
+    fn read_opt<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, StoreError> {
+        match Self::read(path) {
+            Err(StoreError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            r => r.map(Some),
+        }
     }
 
     /// The last saved settings, or defaults if there are none yet.
     pub fn load_state(&self) -> Result<Settings, StoreError> {
-        match Self::read(&self.state_path()) {
-            Err(StoreError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
-                Ok(Settings::default())
-            }
-            r => r,
+        let Some(mut settings) = Self::read_opt::<Settings>(&self.state_path())? else {
+            return Ok(Settings::default());
+        };
+        match Self::read_opt(&self.oled_path())? {
+            Some(oled) => settings.oled = oled,
+            // Older versions kept the OLED mode in state.json. Move it out
+            // before the next lighting save drops it from there.
+            None => self.save_oled(&settings.oled)?,
         }
+        Ok(settings)
+    }
+
+    pub fn save_lighting(&self, lighting: &Lighting) -> Result<(), StoreError> {
+        #[derive(Serialize)]
+        struct State<'a> {
+            lighting: &'a Lighting,
+        }
+        Self::write_atomic(&self.state_path(), &State { lighting })
+    }
+
+    pub fn save_oled(&self, oled: &OledMode) -> Result<(), StoreError> {
+        Self::write_atomic(&self.oled_path(), oled)
     }
 
     pub fn save_state(&self, settings: &Settings) -> Result<(), StoreError> {
-        Self::write_atomic(&self.state_path(), settings)
+        self.save_lighting(&settings.lighting)?;
+        self.save_oled(&settings.oled)
     }
 
     pub fn list_profiles(&self) -> Result<Vec<String>, StoreError> {
@@ -104,12 +149,7 @@ impl Store {
     }
 
     pub fn load_profile(&self, name: &str) -> Result<Settings, StoreError> {
-        match Self::read(&self.profile_path(name)?) {
-            Err(StoreError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
-                Err(StoreError::NotFound(name.into()))
-            }
-            r => r,
-        }
+        Self::read_opt(&self.profile_path(name)?)?.ok_or_else(|| StoreError::NotFound(name.into()))
     }
 
     pub fn save_profile(&self, name: &str, settings: &Settings) -> Result<(), StoreError> {
@@ -151,6 +191,48 @@ mod tests {
             store.load_profile("gaming"),
             Err(StoreError::NotFound(_))
         ));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn state_split_and_migration() {
+        let dir = std::env::temp_dir().join(format!("apexide-state-{}", std::process::id()));
+        let store = Store::new(dir.clone());
+        assert!(matches!(
+            store.load_state().unwrap().oled,
+            OledMode::Sysinfo
+        ));
+
+        // A state.json from before the split still has the OLED mode in it.
+        let mut old = Settings::default();
+        old.lighting.brightness = 40;
+        old.oled = OledMode::Clock {
+            format: "%H".into(),
+        };
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(store.state_path(), serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = store.load_state().unwrap();
+        assert_eq!(loaded.lighting.brightness, 40);
+        assert!(matches!(loaded.oled, OledMode::Clock { .. }));
+
+        // Saving lighting alone keeps the migrated OLED mode.
+        let mut l = loaded.lighting.clone();
+        l.effect = Effect::Off;
+        store.save_lighting(&l).unwrap();
+        let back = store.load_state().unwrap();
+        assert_eq!(back.lighting, l);
+        assert!(matches!(back.oled, OledMode::Clock { .. }));
+        let leftovers = fs::read_dir(&dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
         fs::remove_dir_all(dir).ok();
     }
 }

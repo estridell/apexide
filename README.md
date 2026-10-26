@@ -24,11 +24,13 @@ crates/
 ```
 
 - **One owner.** Only the daemon's render thread talks to the keyboard. API calls change
-  the desired state, and the thread renders it at about 30 fps, writing only what changed.
+  the desired state, and the thread renders it at about 30 fps while something animates
+  (and only when something is due otherwise), writing only what changed.
   It reconnects on replug and returns the keyboard to onboard lighting when it exits.
 - **Layers.** Base effect, then per-key overrides, then temporary flashes, then global
   brightness. On the OLED, a temporary notification sits on top of the current mode.
-- **Persistent.** State is saved to `~/.config/apexide/state.json` on every change.
+- **Persistent.** Lighting is saved to `~/.config/apexide/state.json` and the OLED mode to
+  `oled.json` next to it, each whenever it changes.
   Profiles are named snapshots in `~/.config/apexide/profiles/`.
 - **Transport.** HTTP on the Unix socket `$XDG_RUNTIME_DIR/apexide.sock`, with optional
   TCP (`--tcp 127.0.0.1:7171`).

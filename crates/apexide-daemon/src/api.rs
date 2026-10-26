@@ -23,7 +23,8 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use crate::{
-    state::{Effect, Flash, Notification, OledMode, Settings, Shared, default_clock},
+    engine::Waker,
+    state::{Effect, Flash, Lighting, MAX_FLASHES, Notification, OledMode, Shared, default_clock},
     store::{Store, StoreError},
 };
 
@@ -31,6 +32,10 @@ use crate::{
 pub struct App {
     pub shared: Arc<Mutex<Shared>>,
     pub store: Store,
+    wake: Waker,
+    /// Held from changing the settings until they are on disk, so saves
+    /// land in the same order as the changes.
+    saving: Arc<tokio::sync::Mutex<()>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -86,10 +91,29 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for J<T> {
 
 type Res = Result<Json<Value>, ApiError>;
 
+/// Run blocking store I/O off the async worker threads.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(Into::into)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 
 impl App {
+    pub fn new(shared: Arc<Mutex<Shared>>, store: Store, wake: Waker) -> Self {
+        Self {
+            shared,
+            store,
+            wake,
+            saving: Default::default(),
+        }
+    }
+
     fn form(&self) -> FormFactor {
         self.shared
             .lock()
@@ -100,31 +124,35 @@ impl App {
             .unwrap_or(FormFactor::Tkl)
     }
 
-    /// Apply `f` to the settings, persist them, and return the result.
-    fn update(
-        &self,
-        f: impl FnOnce(&mut Settings) -> Result<(), ApiError>,
-    ) -> Result<Settings, ApiError> {
-        let settings = {
+    /// Apply `f` to the lighting, persist it, and reply with the result.
+    async fn lighting_reply(&self, f: impl FnOnce(&mut Lighting)) -> Res {
+        let _saving = self.saving.lock().await;
+        let lighting = {
             let mut s = self.shared.lock().unwrap();
-            f(&mut s.settings)?;
-            s.settings.clone()
+            f(&mut s.settings.lighting);
+            s.settings.lighting.clone()
         };
-        self.store.save_state(&settings)?;
-        Ok(settings)
+        self.wake.wake();
+        let reply = json!(lighting);
+        let store = self.store.clone();
+        blocking(move || store.save_lighting(&lighting)).await?;
+        Ok(Json(reply))
     }
 
-    fn lighting_reply(&self, f: impl FnOnce(&mut Settings) -> Result<(), ApiError>) -> Res {
-        Ok(Json(json!(self.update(f)?.lighting)))
-    }
-
-    fn oled_reply(&self, mode: OledMode) -> Res {
-        let s = self.update(|s| {
-            s.oled = mode;
-            Ok(())
-        })?;
-        self.shared.lock().unwrap().oled_since = Some(Instant::now());
-        Ok(Json(json!({ "mode": s.oled.summary() })))
+    /// Switch the OLED to `mode`, persist it, and reply with its summary.
+    async fn oled_reply(&self, mode: OledMode) -> Res {
+        let _saving = self.saving.lock().await;
+        let reply = json!({ "mode": mode.summary() });
+        let saved = mode.clone();
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.settings.oled = mode;
+            s.oled_since = Some(Instant::now());
+        }
+        self.wake.wake();
+        let store = self.store.clone();
+        blocking(move || store.save_oled(&saved)).await?;
+        Ok(Json(reply))
     }
 }
 
@@ -184,7 +212,10 @@ pub fn router(app: App) -> Router {
 type St = axum::extract::State<App>;
 
 async fn status(st: St) -> Res {
-    let profiles = st.store.list_profiles().unwrap_or_default();
+    let store = st.store.clone();
+    let profiles = blocking(move || store.list_profiles())
+        .await
+        .unwrap_or_default();
     let s = st.shared.lock().unwrap();
     Ok(Json(json!({
         "version": crate::VERSION,
@@ -222,17 +253,11 @@ async fn get_lighting(st: St) -> Res {
 }
 
 async fn put_lighting(st: St, J(l): J<crate::state::Lighting>) -> Res {
-    st.lighting_reply(|s| {
-        s.lighting = l;
-        Ok(())
-    })
+    st.lighting_reply(|lighting| *lighting = l).await
 }
 
 async fn set_effect(st: St, J(effect): J<Effect>) -> Res {
-    st.lighting_reply(|s| {
-        s.lighting.effect = effect;
-        Ok(())
-    })
+    st.lighting_reply(|l| l.effect = effect).await
 }
 
 #[derive(Deserialize)]
@@ -241,11 +266,11 @@ struct FillReq {
 }
 
 async fn fill(st: St, J(r): J<FillReq>) -> Res {
-    st.lighting_reply(|s| {
-        s.lighting.effect = Effect::Static { color: r.color };
-        s.lighting.keys.clear();
-        Ok(())
+    st.lighting_reply(|l| {
+        l.effect = Effect::Static { color: r.color };
+        l.keys.clear();
     })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -262,10 +287,7 @@ async fn set_keys(st: St, J(r): J<SetKeysReq>) -> Res {
             resolved.push((code, *color));
         }
     }
-    st.lighting_reply(|s| {
-        s.lighting.keys.extend(resolved);
-        Ok(())
-    })
+    st.lighting_reply(|l| l.keys.extend(resolved)).await
 }
 
 #[derive(Deserialize)]
@@ -276,13 +298,11 @@ struct ClearKeysReq {
 
 async fn clear_keys(st: St, J(r): J<ClearKeysReq>) -> Res {
     let codes = r.keys.map(|k| resolve(&k, st.form())).transpose()?;
-    st.lighting_reply(|s| {
-        match codes {
-            Some(c) => s.lighting.keys.retain(|k, _| !c.contains(k)),
-            None => s.lighting.keys.clear(),
-        }
-        Ok(())
+    st.lighting_reply(|l| match codes {
+        Some(c) => l.keys.retain(|k, _| !c.contains(k)),
+        None => l.keys.clear(),
     })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -294,10 +314,7 @@ async fn set_brightness(st: St, J(r): J<BrightnessReq>) -> Res {
     if r.brightness > 100 {
         return Err(ApiError::bad("brightness must be 0-100"));
     }
-    st.lighting_reply(|s| {
-        s.lighting.brightness = r.brightness;
-        Ok(())
-    })
+    st.lighting_reply(|l| l.brightness = r.brightness).await
 }
 
 #[derive(Deserialize)]
@@ -317,13 +334,21 @@ async fn flash(st: St, J(r): J<FlashReq>) -> Res {
     let keys = resolve(&r.keys, st.form())?;
     let now = Instant::now();
     let until = now + Duration::from_millis(r.duration_ms.min(600_000));
-    st.shared.lock().unwrap().flashes.push(Flash {
-        keys,
-        color: r.color,
-        started: now,
-        until,
-        blink_ms: r.blink_ms,
-    });
+    {
+        let mut s = st.shared.lock().unwrap();
+        if s.flashes.len() >= MAX_FLASHES {
+            let excess = s.flashes.len() + 1 - MAX_FLASHES;
+            s.flashes.drain(..excess);
+        }
+        s.flashes.push(Flash {
+            keys,
+            color: r.color,
+            started: now,
+            until,
+            blink_ms: r.blink_ms,
+        });
+    }
+    st.wake.wake();
     Ok(Json(json!({ "ok": true, "duration_ms": r.duration_ms })))
 }
 
@@ -354,7 +379,7 @@ async fn get_oled(st: St) -> Res {
 
 async fn put_oled(st: St, J(mode): J<OledMode>) -> Res {
     validate_oled(&mode)?;
-    st.oled_reply(mode)
+    st.oled_reply(mode).await
 }
 
 fn validate_oled(mode: &OledMode) -> Result<(), ApiError> {
@@ -395,6 +420,7 @@ async fn oled_text(st: St, J(r): J<TextReq>) -> Res {
         text: r.text,
         align: r.align,
     })
+    .await
 }
 
 /// Query parameters for image uploads. Spelled out instead of flattening
@@ -427,6 +453,7 @@ async fn oled_image(st: St, Query(q): Query<ImageQuery>, body: Bytes) -> Res {
         name: q.name.unwrap_or_else(|| "image".into()),
         frames,
     })
+    .await
 }
 
 #[derive(Deserialize, Default)]
@@ -442,19 +469,19 @@ async fn oled_clock(st: St, body: Bytes) -> Res {
     };
     let format = req.format.unwrap_or_else(default_clock);
     validate_clock(&format)?;
-    st.oled_reply(OledMode::Clock { format })
+    st.oled_reply(OledMode::Clock { format }).await
 }
 
 async fn oled_sysinfo(st: St) -> Res {
-    st.oled_reply(OledMode::Sysinfo)
+    st.oled_reply(OledMode::Sysinfo).await
 }
 
 async fn oled_blank(st: St) -> Res {
-    st.oled_reply(OledMode::Blank)
+    st.oled_reply(OledMode::Blank).await
 }
 
 async fn oled_release(st: St) -> Res {
-    st.oled_reply(OledMode::Release)
+    st.oled_reply(OledMode::Release).await
 }
 
 #[derive(Deserialize)]
@@ -474,15 +501,19 @@ async fn oled_notify(st: St, J(r): J<NotifyReq>) -> Res {
         text: r.text,
         until,
     });
+    st.wake.wake();
     Ok(Json(json!({ "ok": true, "duration_ms": r.duration_ms })))
 }
 
 async fn list_profiles(st: St) -> Res {
-    Ok(Json(json!({ "profiles": st.store.list_profiles()? })))
+    let store = st.store.clone();
+    let profiles = blocking(move || store.list_profiles()).await?;
+    Ok(Json(json!({ "profiles": profiles })))
 }
 
 async fn get_profile(st: St, Path(name): Path<String>) -> Res {
-    let p = st.store.load_profile(&name)?;
+    let (store, n) = (st.store.clone(), name.clone());
+    let p = blocking(move || store.load_profile(&n)).await?;
     Ok(Json(
         json!({ "name": name, "lighting": p.lighting, "oled": p.oled.summary() }),
     ))
@@ -490,22 +521,29 @@ async fn get_profile(st: St, Path(name): Path<String>) -> Res {
 
 async fn save_profile(st: St, Path(name): Path<String>) -> Res {
     let settings = st.shared.lock().unwrap().settings.clone();
-    st.store.save_profile(&name, &settings)?;
+    let (store, n) = (st.store.clone(), name.clone());
+    blocking(move || store.save_profile(&n, &settings)).await?;
     Ok(Json(json!({ "saved": name })))
 }
 
 async fn apply_profile(st: St, Path(name): Path<String>) -> Res {
-    let p = st.store.load_profile(&name)?;
-    st.update(|s| {
-        *s = p;
-        Ok(())
-    })?;
-    st.shared.lock().unwrap().oled_since = Some(Instant::now());
+    let (store, n) = (st.store.clone(), name.clone());
+    let p = blocking(move || store.load_profile(&n)).await?;
+    let _saving = st.saving.lock().await;
+    {
+        let mut s = st.shared.lock().unwrap();
+        s.settings = p.clone();
+        s.oled_since = Some(Instant::now());
+    }
+    st.wake.wake();
+    let store = st.store.clone();
+    blocking(move || store.save_state(&p)).await?;
     Ok(Json(json!({ "applied": name })))
 }
 
 async fn delete_profile(st: St, Path(name): Path<String>) -> Res {
-    st.store.delete_profile(&name)?;
+    let (store, n) = (st.store.clone(), name.clone());
+    blocking(move || store.delete_profile(&n)).await?;
     Ok(Json(json!({ "deleted": name })))
 }
 

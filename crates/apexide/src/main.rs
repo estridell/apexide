@@ -184,7 +184,7 @@ enum Cmd {
     ///   onboard    the keyboard's own lighting; overrides and flashes still
     ///              show on their keys
     ///
-    /// Effects are rendered by the daemon at about 30 fps.
+    /// Animated effects are rendered by the daemon at about 30 fps.
     #[command(
         verbatim_doc_comment,
         about = "Set the whole-board lighting effect",
@@ -222,8 +222,9 @@ enum Cmd {
     Brightness { percent: u8 },
     /// Highlight keys temporarily, steady or blinking.
     ///
-    /// Flashes sit above overrides and expire on their own. Several can be
-    /// active at once, and the newest wins where they overlap.
+    /// Flashes sit above overrides and expire on their own. Up to 64 can be
+    /// active at once, and the newest wins where they overlap. Adding one
+    /// beyond that ends the oldest early.
     #[command(
         after_long_help = "EXAMPLES\n  apexide flash esc red\n  apexide flash fkeys orange -d 5000 -b 250"
     )]
@@ -458,7 +459,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     .unwrap_or_else(|_| "info".into()),
             )
             .init();
-        let rt = tokio::runtime::Runtime::new()?;
+        // The API is light, so a couple of workers is plenty; the keyboard
+        // has its own render thread.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
         return rt.block_on(apexide_daemon::serve(apexide_daemon::ServeOptions {
             socket,
             tcp,
