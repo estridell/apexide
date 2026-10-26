@@ -1,0 +1,94 @@
+# Checks every PR. Every push to main also publishes a GitHub release.
+#
+# Versions are MAJOR.MINOR.N: MAJOR.MINOR comes from the workspace version in
+# Cargo.toml, and N counts releases on that line (the next free vMAJOR.MINOR.N
+# tag). Bump the minor version in Cargo.toml (0.1.0 -> 0.2.0) to start a new
+# line at N = 0.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Cancel superseded PR runs, but let releases on main finish in order.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y musl-tools
+      - name: Pick the version
+        id: version
+        run: |
+          line=$(cargo metadata --no-deps --format-version 1 --locked |
+            jq -r '.packages[] | select(.name == "apexide") | .version' | cut -d. -f1,2)
+          last=$(git ls-remote --tags --refs origin "refs/tags/v$line.*" |
+            sed 's|.*/v||' | cut -d. -f3 | sort -n | tail -1)
+          version="$line.$(( ${last:--1} + 1 ))"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "next release: $version"
+      - name: Build
+        run: |
+          # PR builds keep the -dev version; only releases get the real one.
+          if [ "$RELEASE" = true ]; then export APEXIDE_VERSION=${{ steps.version.outputs.version }}; fi
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          mkdir dist
+          cp target/x86_64-unknown-linux-musl/release/apexide dist/apexide-x86_64-linux
+          cp packaging/70-apexide.rules packaging/apexide.service dist/
+          (cd dist && sha256sum apexide-x86_64-linux > apexide-x86_64-linux.sha256)
+          dist/apexide-x86_64-linux --version
+          file dist/apexide-x86_64-linux
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  release:
+    needs: [check, build]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Publish v${{ needs.build.outputs.version }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.build.outputs.version }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --generate-notes
