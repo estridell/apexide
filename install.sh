@@ -57,19 +57,6 @@ mkdir -p "$bin_dir"
 install -m 755 "$tmp/$asset" "$bin_dir/apexkb"
 say "installed $("$bin_dir/apexkb" --version) to $bin_dir/apexkb"
 
-# This project used to be called apexide. Remove what an old install left
-# behind so two daemons don't fight over the keyboard.
-if [ -f "$unit_dir/apexide.service" ]; then
-    say "removing the old apexide user service"
-    systemctl --user disable --now apexide.service 2>/dev/null || true
-    rm -f "$unit_dir/apexide.service"
-    systemctl --user daemon-reload
-fi
-rm -f "$bin_dir/apexide"
-if [ "$udev" = 1 ] && [ -f /etc/udev/rules.d/70-apexide.rules ]; then
-    sudo rm -f /etc/udev/rules.d/70-apexide.rules
-fi
-
 if [ "$udev" = 1 ]; then
     say "installing the udev rule (needs sudo)"
     curl -fsSL -o "$tmp/70-apexkb.rules" "$base/70-apexkb.rules"
