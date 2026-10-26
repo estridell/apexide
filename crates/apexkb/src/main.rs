@@ -11,9 +11,9 @@ use crate::client::{Body, Client, DaemonDown};
 
 const OVERVIEW: &str = "\
 CONCEPTS
-  The daemon (`apexide daemon`) owns the keyboard. Every other command is a
-  client that talks to it over $XDG_RUNTIME_DIR/apexide.sock. Settings are
-  saved on every change (~/.config/apexide/) and restored when it restarts.
+  The daemon (`apexkb daemon`) owns the keyboard. Every other command is a
+  client that talks to it over $XDG_RUNTIME_DIR/apexkb.sock. Settings are
+  saved on every change (~/.config/apexkb/) and restored when it restarts.
 
   Lighting is layered, bottom to top:
     1. effect      whole-board animation (`effect`), or `onboard` to let the
@@ -40,10 +40,10 @@ KEY SELECTORS
                    enter lshift z..m comma period slash rshift up lctrl lwin
                    lalt space ralt fn menu rctrl left down right, numpad keys
                    kp0..kp9 etc. Common aliases work (escape, ctrl, win, del).
-                   `apexide keys` lists them all.
+                   `apexkb keys` lists them all.
     raw LED codes  0x87
     groups         all letters numbers fkeys wasd arrows nav modifiers numpad
-  Quote a selector that contains spaces: apexide set 'q w e' red
+  Quote a selector that contains spaces: apexkb set 'q w e' red
 
 OUTPUT AND EXIT CODES
   Output is human-readable text by default. With --json the daemon's JSON
@@ -51,37 +51,38 @@ OUTPUT AND EXIT CODES
     0  success
     1  request rejected or failed (bad color, unknown key, ...)
     2  invalid command line
-    3  daemon not reachable (start it with `apexide daemon`)
+    3  daemon not reachable (start it with `apexkb daemon`)
 
 UPDATES
-  `apexide update` installs the latest GitHub release (`--check` only looks).
-  `apexide --version` prints this binary's version, `apexide status` warns
+  `apexkb update` installs the latest GitHub release (`--check` only looks).
+  `apexkb --version` prints this binary's version, `apexkb status` warns
   when the running daemon is a different version.
 
 EXAMPLES
-  apexide effect wave --period-ms 2500
-  apexide set wasd red esc white
-  apexide flash fkeys red -d 2000 -b 150
-  apexide oled text \"build passed\"
-  apexide profile save gaming
+  apexkb effect wave --period-ms 2500
+  apexkb set wasd red esc white
+  apexkb flash fkeys red -d 2000 -b 150
+  apexkb oled text \"build passed\"
+  apexkb profile save gaming
 
-Run `apexide <command> --help` for one command, or `apexide reference`
+Run `apexkb <command> --help` for one command, or `apexkb reference`
 (alias: --help-verbose) for every command's full help at once.";
 
 /// Control SteelSeries Apex keyboards: per-key RGB, effects, OLED and profiles.
 ///
-/// apexide is a Linux replacement for SteelSeries GG. A small daemon drives
+/// apexkb is a Linux replacement for SteelSeries GG. A small daemon drives
 /// the keyboard, and this CLI exposes everything it can do, both for people
 /// and for scripts and agents (add --json).
 #[derive(Parser)]
 #[command(
-    version = apexide_daemon::VERSION,
+    name = "apexkb",
+    version = apexkb_daemon::VERSION,
     propagate_version = true,
-    after_help = "Run `apexide --help` for concepts, color and key syntax, and exit codes,\nor `apexide reference` for the full help of every command.",
+    after_help = "Run `apexkb --help` for concepts, color and key syntax, and exit codes,\nor `apexkb reference` for the full help of every command.",
     after_long_help = OVERVIEW
 )]
 struct Cli {
-    /// Daemon socket [env: APEXIDE_SOCKET] [default: $XDG_RUNTIME_DIR/apexide.sock]
+    /// Daemon socket [env: APEXKB_SOCKET] [default: $XDG_RUNTIME_DIR/apexkb.sock]
     #[arg(
         long,
         global = true,
@@ -104,13 +105,13 @@ enum Cmd {
     /// replugged, and on SIGINT/SIGTERM it hands lighting back to the keyboard
     /// and clears the OLED. Set RUST_LOG=debug for verbose logs.
     #[command(
-        after_long_help = "EXAMPLES\n  apexide daemon\n  apexide daemon --tcp 127.0.0.1:7171\n  systemctl --user enable --now apexide   # see packaging/apexide.service"
+        after_long_help = "EXAMPLES\n  apexkb daemon\n  apexkb daemon --tcp 127.0.0.1:7171\n  systemctl --user enable --now apexkb   # see packaging/apexkb.service"
     )]
     Daemon {
         /// Also serve the HTTP API over TCP. Keep it on localhost; there is no auth.
         #[arg(long, value_name = "ADDR")]
         tcp: Option<SocketAddr>,
-        /// Where state and profiles are stored [default: $XDG_CONFIG_HOME/apexide]
+        /// Where state and profiles are stored [default: $XDG_CONFIG_HOME/apexkb]
         #[arg(long, value_name = "DIR")]
         config_dir: Option<PathBuf>,
     },
@@ -129,11 +130,11 @@ enum Cmd {
     Schema,
     /// Print the full help of every command (alias: --help-verbose).
     Reference,
-    /// Update apexide to the latest GitHub release (works without the daemon).
+    /// Update apexkb to the latest GitHub release (works without the daemon).
     ///
     /// Downloads the release binary, checks its SHA-256 and replaces the
-    /// running binary in place, so install apexide somewhere you can write
-    /// (the README uses ~/.local/bin). If the apexide.service user unit is
+    /// running binary in place, so install apexkb somewhere you can write
+    /// (the README uses ~/.local/bin). If the apexkb.service user unit is
     /// active it is restarted; a daemon started by hand keeps running the old
     /// version until you restart it. Builds from source (version ending in
     /// -dev) count as older than the release of the same version.
@@ -141,7 +142,7 @@ enum Cmd {
     /// With --json: {current, latest, update_available, release_url, updated,
     /// and after an update path and service_restarted}.
     #[command(
-        after_long_help = "EXAMPLES\n  apexide update --check\n  apexide update\n  apexide --version"
+        after_long_help = "EXAMPLES\n  apexkb update --check\n  apexkb update\n  apexkb --version"
     )]
     Update {
         /// Only report whether a newer release exists.
@@ -154,7 +155,7 @@ enum Cmd {
     /// Paint every key one color and remove all per-key overrides.
     ///
     /// Same as `effect static --color COLOR` followed by `clear`.
-    #[command(after_long_help = "EXAMPLES\n  apexide fill '#002244'\n  apexide fill warm")]
+    #[command(after_long_help = "EXAMPLES\n  apexkb fill '#002244'\n  apexkb fill warm")]
     Fill { color: String },
     /// Give keys fixed colors on top of the current effect.
     ///
@@ -162,7 +163,7 @@ enum Cmd {
     /// with `clear`, `fill`, or by applying a profile.
     #[command(
         arg_required_else_help = true,
-        after_long_help = "EXAMPLES\n  apexide set wasd red\n  apexide set wasd red esc white 'f1 f2 f3' '#00ff88'\n  apexide set 0x87 blue"
+        after_long_help = "EXAMPLES\n  apexkb set wasd red\n  apexkb set wasd red esc white 'f1 f2 f3' '#00ff88'\n  apexkb set 0x87 blue"
     )]
     Set {
         #[arg(num_args = 2.., value_names = ["SELECTOR", "COLOR"])]
@@ -188,7 +189,7 @@ enum Cmd {
     #[command(
         verbatim_doc_comment,
         about = "Set the whole-board lighting effect",
-        after_long_help = "EXAMPLES\n  apexide effect wave --period-ms 2500 --direction left\n  apexide effect breathe -c cyan -p 4000\n  apexide effect gradient --from purple --to orange -d down\n  apexide effect twinkle -c white --background '#000022'\n  apexide effect onboard"
+        after_long_help = "EXAMPLES\n  apexkb effect wave --period-ms 2500 --direction left\n  apexkb effect breathe -c cyan -p 4000\n  apexkb effect gradient --from purple --to orange -d down\n  apexkb effect twinkle -c white --background '#000022'\n  apexkb effect onboard"
     )]
     Effect {
         #[arg(value_enum)]
@@ -226,7 +227,7 @@ enum Cmd {
     /// active at once, and the newest wins where they overlap. Adding one
     /// beyond that ends the oldest early.
     #[command(
-        after_long_help = "EXAMPLES\n  apexide flash esc red\n  apexide flash fkeys orange -d 5000 -b 250"
+        after_long_help = "EXAMPLES\n  apexkb flash esc red\n  apexkb flash fkeys orange -d 5000 -b 250"
     )]
     Flash {
         selector: String,
@@ -251,12 +252,12 @@ enum Cmd {
     /// Save, apply and manage named setups (lighting and OLED together).
     #[command(subcommand)]
     Profile(ProfileCmd),
-    /// Send a request straight to the HTTP API (see `apexide schema`).
+    /// Send a request straight to the HTTP API (see `apexkb schema`).
     ///
     /// BODY is JSON, or @FILE to send a file's raw bytes (images).
     /// The response is always printed as JSON.
     #[command(
-        after_long_help = "EXAMPLES\n  apexide raw GET /v1/lighting\n  apexide raw PUT /v1/lighting '{\"effect\":{\"type\":\"off\"},\"keys\":{\"esc\":\"red\"},\"brightness\":80}'\n  apexide raw POST '/v1/oled/image?fit=cover' @photo.png"
+        after_long_help = "EXAMPLES\n  apexkb raw GET /v1/lighting\n  apexkb raw PUT /v1/lighting '{\"effect\":{\"type\":\"off\"},\"keys\":{\"esc\":\"red\"},\"brightness\":80}'\n  apexkb raw POST '/v1/oled/image?fit=cover' @photo.png"
     )]
     Raw {
         /// GET, POST, PUT or DELETE.
@@ -275,7 +276,7 @@ enum OledCmd {
     /// the biggest, down to 32 x 6 at the smallest. Newlines in the text
     /// start a new line.
     #[command(
-        after_long_help = "EXAMPLES\n  apexide oled text hello world\n  apexide oled text --align left \"$(printf 'line one\\nline two')\""
+        after_long_help = "EXAMPLES\n  apexkb oled text hello world\n  apexkb oled text --align left \"$(printf 'line one\\nline two')\""
     )]
     Text {
         /// Words are joined with spaces.
@@ -289,7 +290,7 @@ enum OledCmd {
     /// GIFs loop with their own frame timing. Photos look best dithered (the
     /// default); logos and line art look best with --no-dither.
     #[command(
-        after_long_help = "EXAMPLES\n  apexide oled image cat.gif\n  apexide oled image logo.png --fit stretch --no-dither --threshold 100"
+        after_long_help = "EXAMPLES\n  apexkb oled image cat.gif\n  apexkb oled image logo.png --fit stretch --no-dither --threshold 100"
     )]
     Image {
         path: PathBuf,
@@ -308,7 +309,7 @@ enum OledCmd {
     },
     /// Show a clock.
     #[command(
-        after_long_help = "EXAMPLES\n  apexide oled clock\n  apexide oled clock -f '%H:%M:%S'\n  apexide oled clock -f '%a %d %b'"
+        after_long_help = "EXAMPLES\n  apexkb oled clock\n  apexkb oled clock -f '%H:%M:%S'\n  apexkb oled clock -f '%a %d %b'"
     )]
     Clock {
         /// strftime format.
@@ -323,7 +324,7 @@ enum OledCmd {
     Release,
     /// Show a message over the current mode for a while.
     #[command(
-        after_long_help = "EXAMPLES\n  apexide oled notify \"Build passed\"\n  apexide oled notify -d 10000 \"Meeting in 5 min\""
+        after_long_help = "EXAMPLES\n  apexkb oled notify \"Build passed\"\n  apexkb oled notify -d 10000 \"Meeting in 5 min\""
     )]
     Notify {
         /// Words are joined with spaces.
@@ -419,7 +420,7 @@ fn reference() -> String {
     let mut root = Cli::command();
     root.build();
     let mut out = root.render_long_help().to_string();
-    walk(&mut root, "apexide", &mut out);
+    walk(&mut root, "apexkb", &mut out);
     out
 }
 
@@ -449,8 +450,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let socket = cli
         .socket
         .clone()
-        .or_else(|| std::env::var_os("APEXIDE_SOCKET").map(PathBuf::from))
-        .unwrap_or_else(apexide_daemon::default_socket);
+        .or_else(|| std::env::var_os("APEXKB_SOCKET").map(PathBuf::from))
+        .unwrap_or_else(apexkb_daemon::default_socket);
 
     if let Cmd::Daemon { tcp, config_dir } = cli.cmd {
         tracing_subscriber::fmt()
@@ -465,10 +466,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             .worker_threads(2)
             .enable_all()
             .build()?;
-        return rt.block_on(apexide_daemon::serve(apexide_daemon::ServeOptions {
+        return rt.block_on(apexkb_daemon::serve(apexkb_daemon::ServeOptions {
             socket,
             tcp,
-            config_dir: config_dir.unwrap_or_else(apexide_daemon::store::Store::default_dir),
+            config_dir: config_dir.unwrap_or_else(apexkb_daemon::store::Store::default_dir),
         }));
     }
 
@@ -481,7 +482,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let q = form.map(|f| format!("?form={}", value_name(f))).unwrap_or_default();
             (c.get(&format!("/v1/keys{q}"))?, fmt_keys)
         }
-        Cmd::Schema => (apexide_daemon::api::schema(), |v| serde_json::to_string_pretty(v).unwrap()),
+        Cmd::Schema => (apexkb_daemon::api::schema(), |v| serde_json::to_string_pretty(v).unwrap()),
         Cmd::Reference => (Value::String(reference()), |v| v.as_str().unwrap_or_default().to_string()),
         Cmd::Update { check, force } => (update::run(check, force)?, update::describe),
         Cmd::Raw { method, path, body } => {
@@ -559,7 +560,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ),
             OledCmd::Preview => (c.get("/v1/oled/preview")?, |v| match v["ascii"].as_str() {
                 Some(a) => a.trim_end().to_string(),
-                None => "(OLED not driven by apexide)".into(),
+                None => "(OLED not driven by apexkb)".into(),
             }),
             OledCmd::Status => (c.get("/v1/oled")?, fmt_oled),
         },
@@ -660,11 +661,11 @@ fn fmt_oled(v: &Value) -> String {
 fn fmt_status(v: &Value) -> String {
     let mut out = String::new();
     if let Some(daemon) = v["version"].as_str()
-        && daemon != apexide_daemon::VERSION
+        && daemon != apexkb_daemon::VERSION
     {
         out += &format!(
             "daemon: {daemon} (this CLI is {}; restart the daemon)\n",
-            apexide_daemon::VERSION
+            apexkb_daemon::VERSION
         );
     }
     if v["connected"].as_bool() == Some(true) {
@@ -731,7 +732,7 @@ fn fmt_frame(v: &Value) -> String {
         return "onboard lighting (keyboard controls the LEDs)".into();
     }
     let header = if v["mode"] == "overlay" {
-        "onboard lighting, with these keys set by apexide:\n"
+        "onboard lighting, with these keys set by apexkb:\n"
     } else {
         ""
     };

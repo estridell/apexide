@@ -16,7 +16,7 @@ pub enum Error {
     #[error("no supported SteelSeries Apex keyboard found")]
     NotFound,
     #[error(
-        "permission denied opening {0}; install packaging/70-apexide.rules into /etc/udev/rules.d and replug the keyboard"
+        "permission denied opening {0}; install packaging/70-apexkb.rules into /etc/udev/rules.d and replug the keyboard"
     )]
     Permission(PathBuf),
     #[error("keyboard I/O failed: {0}")]

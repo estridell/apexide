@@ -53,7 +53,7 @@ jobs:
         id: version
         run: |
           line=$(cargo metadata --no-deps --format-version 1 --locked |
-            jq -r '.packages[] | select(.name == "apexide") | .version' | cut -d. -f1,2)
+            jq -r '.packages[] | select(.name == "apexkb-rs") | .version' | cut -d. -f1,2)
           next() {
             last=$(git ls-remote --tags --refs origin "refs/tags/v$line.*" |
               sed 's|.*/v||' | cut -d. -f3 | sort -n | tail -1)
@@ -76,14 +76,14 @@ jobs:
       - name: Build
         run: |
           # PR builds keep the -dev version; only releases get the real one.
-          if [ "$RELEASE" = true ]; then export APEXIDE_VERSION=${{ steps.version.outputs.version }}; fi
+          if [ "$RELEASE" = true ]; then export APEXKB_VERSION=${{ steps.version.outputs.version }}; fi
           cargo build --release --locked --target x86_64-unknown-linux-musl
           mkdir dist
-          cp target/x86_64-unknown-linux-musl/release/apexide dist/apexide-x86_64-linux
-          cp packaging/70-apexide.rules packaging/apexide.service dist/
-          (cd dist && sha256sum apexide-x86_64-linux > apexide-x86_64-linux.sha256)
-          dist/apexide-x86_64-linux --version
-          file dist/apexide-x86_64-linux
+          cp target/x86_64-unknown-linux-musl/release/apexkb dist/apexkb-x86_64-linux
+          cp packaging/70-apexkb.rules packaging/apexkb.service dist/
+          (cd dist && sha256sum apexkb-x86_64-linux > apexkb-x86_64-linux.sha256)
+          dist/apexkb-x86_64-linux --version
+          file dist/apexkb-x86_64-linux
       - uses: actions/upload-artifact@v7
         with:
           name: dist
@@ -111,7 +111,7 @@ jobs:
             --title "$TAG" \
             --generate-notes
           # Runs can finish out of order, leaving GitHub's Latest badge on an
-          # older release. Nothing depends on it: `apexide update` and
+          # older release. Nothing depends on it: `apexkb update` and
           # install.sh pick the highest version from the release list.
 
   # A run that reserved a tag but did not publish frees it again.

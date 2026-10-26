@@ -1,12 +1,12 @@
 [package]
-name = "apexide-daemon"
+name = "apexkb-daemon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-apexide-core.workspace = true
+apexkb-core.workspace = true
 axum = "0.8.9"
 chrono = { version = "0.4.45", features = ["clock"] }
 embedded-graphics = "0.8.2"

@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, time::Instant};
 
-use apexide_core::{
+use apexkb_core::{
     DeviceInfo, KeyCode, Rgb,
     oled::{Align, AnimFrame},
 };
@@ -115,7 +115,7 @@ impl Default for Lighting {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OledMode {
-    /// apexide clears the OLED once and then stops drawing on it.
+    /// apexkb clears the OLED once and then stops drawing on it.
     Release,
     /// Screen off.
     Blank,
@@ -204,7 +204,7 @@ pub struct Shared {
     pub last_error: Option<String>,
     /// Last lighting and OLED frame computed by the render thread.
     pub frame_lighting: crate::effects::LightingFrame,
-    pub frame_oled: Option<apexide_core::Frame>,
+    pub frame_oled: Option<apexkb_core::Frame>,
     /// When the OLED mode last changed; animations play from here.
     pub oled_since: Option<Instant>,
 }

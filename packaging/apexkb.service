@@ -1,0 +1,11 @@
+[Unit]
+Description=apexkb - SteelSeries Apex keyboard daemon
+Documentation=https://github.com/estridell/apexkb-rs
+
+[Service]
+ExecStart=%h/.local/bin/apexkb daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

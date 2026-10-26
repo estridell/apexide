@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use apexide_core::{Frame, Keyboard, keys::KeyDef};
+use apexkb_core::{Frame, Keyboard, keys::KeyDef};
 
 use crate::{
     effects::{self, LightingFrame},
@@ -61,7 +61,7 @@ impl Engine {
         let flag = stop.clone();
         let (tx, rx) = mpsc::channel();
         let handle = thread::Builder::new()
-            .name("apexide-render".into())
+            .name("apexkb-render".into())
             .spawn(move || run(shared, flag, rx))
             .expect("spawn render thread");
         Self {
@@ -148,7 +148,7 @@ fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>, wake: mpsc::Receiver<(
             let form = kb
                 .as_ref()
                 .map(|k| k.model().form)
-                .unwrap_or(apexide_core::FormFactor::Tkl);
+                .unwrap_or(apexkb_core::FormFactor::Tkl);
             let keys: Vec<&KeyDef> = form.keys().collect();
             let colors = effects::render(
                 &s.settings.lighting,
@@ -247,7 +247,7 @@ fn write(
     out: &mut Output,
     lighting: LightingFrame,
     oled: Option<Frame>,
-) -> apexide_core::device::Result<()> {
+) -> apexkb_core::device::Result<()> {
     let refresh = out.written.is_none_or(|t| t.elapsed() >= REFRESH_EVERY);
     let prev = out.lighting.take();
     let changed = prev.as_ref() != Some(&lighting);

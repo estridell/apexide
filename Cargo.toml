@@ -6,11 +6,11 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/estridell/apexide"
+repository = "https://github.com/estridell/apexkb-rs"
 
 [workspace.dependencies]
-apexide-core = { path = "crates/apexide-core" }
-apexide-daemon = { path = "crates/apexide-daemon" }
+apexkb-core = { path = "crates/apexkb-core" }
+apexkb-daemon = { path = "crates/apexkb-daemon" }
 
 [profile.release]
 strip = true

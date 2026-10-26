@@ -2,7 +2,7 @@
 
 use std::{fs, time::Instant};
 
-use apexide_core::{
+use apexkb_core::{
     Frame,
     oled::{self, Align, HEIGHT, WIDTH},
 };

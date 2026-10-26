@@ -83,25 +83,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "apexide"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "apexide-core",
- "apexide-daemon",
- "clap",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "tokio",
- "tracing-subscriber",
- "ureq",
-]
-
-[[package]]
-name = "apexide-core"
+name = "apexkb-core"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -114,11 +96,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "apexide-daemon"
+name = "apexkb-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "apexide-core",
+ "apexkb-core",
  "axum",
  "chrono",
  "embedded-graphics",
@@ -127,6 +109,24 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "apexkb-rs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "apexkb-core",
+ "apexkb-daemon",
+ "clap",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tracing-subscriber",
+ "ureq",
 ]
 
 [[package]]

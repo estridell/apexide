@@ -1,14 +1,18 @@
 [package]
-name = "apexide"
+name = "apexkb-rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "apexkb"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.104"
-apexide-core.workspace = true
-apexide-daemon.workspace = true
+apexkb-core.workspace = true
+apexkb-daemon.workspace = true
 clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
 semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }

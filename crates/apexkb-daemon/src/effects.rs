@@ -2,7 +2,7 @@
 
 use std::f32::consts::TAU;
 
-use apexide_core::{KeyCode, Rgb, keys::KeyDef};
+use apexkb_core::{KeyCode, Rgb, keys::KeyDef};
 
 use crate::state::{Direction, Effect, Flash, Lighting};
 
@@ -84,7 +84,7 @@ pub enum LightingFrame {
     /// The keyboard's onboard profile drives the LEDs.
     #[default]
     Onboard,
-    /// apexide drives every key.
+    /// apexkb drives every key.
     Full(Vec<(KeyCode, Rgb)>),
     /// Onboard lighting stays on underneath; only these keys are set.
     Overlay(Vec<(KeyCode, Rgb)>),
@@ -167,7 +167,7 @@ pub fn render(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use apexide_core::{FormFactor, keys};
+    use apexkb_core::{FormFactor, keys};
 
     use super::*;
 

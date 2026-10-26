@@ -2,7 +2,7 @@
 //! then hands lighting back to the keyboard.
 use std::{thread::sleep, time::Duration};
 
-use apexide_core::{Frame, Keyboard, Rgb, keys, oled::Align};
+use apexkb_core::{Frame, Keyboard, Rgb, keys, oled::Align};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut kb = Keyboard::open()?;
@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|k| (k, Rgb::new(255, 0, 0))),
     );
     kb.set_colors(&colors)?;
-    kb.draw_oled(&Frame::text("apexide says hi", Align::Center))?;
+    kb.draw_oled(&Frame::text("apexkb says hi", Align::Center))?;
     sleep(Duration::from_secs(4));
     kb.onboard_lighting()?;
     Ok(())
