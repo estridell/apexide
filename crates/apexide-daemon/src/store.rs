@@ -100,16 +100,25 @@ impl Store {
 
     /// The last saved settings, or defaults if there are none yet.
     pub fn load_state(&self) -> Result<Settings, StoreError> {
-        let Some(mut settings) = Self::read_opt::<Settings>(&self.state_path())? else {
-            return Ok(Settings::default());
-        };
-        match Self::read_opt(&self.oled_path())? {
-            Some(oled) => settings.oled = oled,
+        let state = Self::read_opt::<Settings>(&self.state_path())?;
+        let oled = Self::read_opt(&self.oled_path())?;
+        Ok(match (state, oled) {
+            (Some(mut settings), Some(oled)) => {
+                settings.oled = oled;
+                settings
+            }
             // Older versions kept the OLED mode in state.json. Move it out
             // before the next lighting save drops it from there.
-            None => self.save_oled(&settings.oled)?,
-        }
-        Ok(settings)
+            (Some(settings), None) => {
+                self.save_oled(&settings.oled)?;
+                settings
+            }
+            (None, Some(oled)) => Settings {
+                oled,
+                ..Default::default()
+            },
+            (None, None) => Settings::default(),
+        })
     }
 
     pub fn save_lighting(&self, lighting: &Lighting) -> Result<(), StoreError> {
@@ -202,6 +211,11 @@ mod tests {
             store.load_state().unwrap().oled,
             OledMode::Sysinfo
         ));
+
+        // An OLED change alone, with no lighting saved yet, survives.
+        store.save_oled(&OledMode::Blank).unwrap();
+        assert!(matches!(store.load_state().unwrap().oled, OledMode::Blank));
+        fs::remove_file(store.oled_path()).unwrap();
 
         // A state.json from before the split still has the OLED mode in it.
         let mut old = Settings::default();
