@@ -13,8 +13,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Cancel superseded PR runs, but let releases on main finish in order.
+  # Superseded PR runs are cancelled. Each push to main gets its own group so
+  # none is ever cancelled or dropped from the queue: every merge is released.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -36,8 +37,11 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # to reserve the release tag
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -50,11 +54,25 @@ jobs:
         run: |
           line=$(cargo metadata --no-deps --format-version 1 --locked |
             jq -r '.packages[] | select(.name == "apexide") | .version' | cut -d. -f1,2)
-          last=$(git ls-remote --tags --refs origin "refs/tags/v$line.*" |
-            sed 's|.*/v||' | cut -d. -f3 | sort -n | tail -1)
-          version="$line.$(( ${last:--1} + 1 ))"
+          next() {
+            last=$(git ls-remote --tags --refs origin "refs/tags/v$line.*" |
+              sed 's|.*/v||' | cut -d. -f3 | sort -n | tail -1)
+            echo "$line.$(( ${last:--1} + 1 ))"
+          }
+          version=$(next)
+          if [ "$RELEASE" = true ]; then
+            # Reserve the tag now. Main runs are not serialized, so another run
+            # may take the same number; the push then fails and we try the next.
+            for _ in 1 2 3 4 5; do
+              git push -q origin "$GITHUB_SHA:refs/tags/v$version" && break
+              version=$(next)
+            done
+            git ls-remote --exit-code origin "refs/tags/v$version" | grep -q "^$GITHUB_SHA" ||
+              { echo "could not reserve a release tag"; exit 1; }
+            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "next release: $version"
+          echo "release version: $version"
       - name: Build
         run: |
           # PR builds keep the -dev version; only releases get the real one.
@@ -85,10 +103,25 @@ jobs:
       - name: Publish v${{ needs.build.outputs.version }}
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: v${{ needs.build.outputs.version }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
           gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --verify-tag \
             --title "$TAG" \
             --generate-notes
+
+  # A run that reserved a tag but did not publish frees it again.
+  unreserve:
+    needs: [check, build, release]
+    if: always() && needs.build.outputs.tag != '' && needs.release.result != 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"
