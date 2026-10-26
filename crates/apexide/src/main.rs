@@ -24,7 +24,7 @@ CONCEPTS
   keys and the rest of the board keeps its onboard lighting.
 
   The OLED (128x40, monochrome) shows one mode at a time: text, image, clock,
-  sysinfo, blank or release. `oled notify` shows a message over it for a while.
+  sysinfo (default), blank or release. `oled notify` shows a message over it for a while.
   `profile save` stores lighting and OLED together under a name.
 
 COLORS
@@ -286,7 +286,7 @@ enum OledCmd {
         #[arg(long, short, default_value = "%H:%M")]
         format: String,
     },
-    /// Show live CPU and RAM usage bars.
+    /// Show live CPU and RAM usage bars (the default mode).
     Sysinfo,
     /// Turn the screen off (stays off).
     Blank,

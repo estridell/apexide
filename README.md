@@ -66,7 +66,7 @@ apexide frame                           # colors currently being sent
 apexide oled text "hello world"         # auto-sized, word-wrapped
 apexide oled image cat.gif              # PNG/JPEG/BMP/animated GIF, dithered to 1-bit
 apexide oled clock -f '%H:%M:%S'
-apexide oled sysinfo                    # CPU/RAM bars
+apexide oled sysinfo                    # CPU/RAM bars (default)
 apexide oled notify "Build passed" -d 3000
 apexide oled preview                    # ASCII art of what the screen shows
 apexide oled release                    # clear the screen and stop drawing on it
@@ -120,6 +120,13 @@ feature report, with no report IDs.
 A `0x3A` packet only changes the keys it lists: on top of onboard lighting, every other key
 keeps its onboard color (verified on the Apex 7 TKL). A single key cannot be handed back to
 onboard lighting; `0x3B` restores the whole board.
+
+Holding the OLED menu button opens the firmware's OLED menu. While it is open the keyboard
+ignores `0x61` frames, and when it closes the menu's last frame stays until the next `0x61`.
+Neither event is reported: interface 4 (vendor page `0xFFC1`, 64-byte input reports) only
+sends `02 01 <level>` when the roller changes the illumination brightness in the menu. So the
+daemon rewrites the OLED every 250 ms, which clears the menu frame right after it closes
+(verified on the Apex 7 TKL). `release` mode never draws, so the menu frame stays there.
 
 LED codes are HID usage codes, plus `0xF0` for the SteelSeries/Fn key. The Apex 7 TKL does
 not answer the brightness read-back (`0xA3`), so apexide applies brightness in software.
