@@ -3,24 +3,88 @@ mod client;
 use std::{net::SocketAddr, path::PathBuf};
 
 use anyhow::Context;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
-use crate::client::{Body, Client};
+use crate::client::{Body, Client, DaemonDown};
+
+const OVERVIEW: &str = "\
+CONCEPTS
+  The daemon (`apexide daemon`) owns the keyboard. Every other command is a
+  client that talks to it over $XDG_RUNTIME_DIR/apexide.sock. Settings are
+  saved on every change (~/.config/apexide/) and restored when it restarts.
+
+  Lighting is layered, bottom to top:
+    1. effect      whole-board animation (`effect`), or `onboard` to let the
+                   keyboard's own profile drive the LEDs
+    2. overrides   fixed per-key colors (`set`, `clear`)
+    3. flashes     temporary highlights that expire on their own (`flash`)
+    4. brightness  global 0-100 scale (`brightness`)
+  On top of the onboard effect, overrides and flashes light only their own
+  keys and the rest of the board keeps its onboard lighting.
+
+  The OLED (128x40, monochrome) shows one mode at a time: text, image, clock,
+  sysinfo, blank or release. `oled notify` shows a message over it for a while.
+  `profile save` stores lighting and OLED together under a name.
+
+COLORS
+  #rrggbb, #rgb, or a name: off black white red green blue yellow orange cyan
+  teal magenta purple pink warm
+
+KEY SELECTORS
+  A comma- or space-separated list of any of:
+    key names      esc f1..f12 prtsc scrlk pause grave 1..0 minus equal
+                   backspace insert home pgup tab q..p lbracket rbracket
+                   backslash delete end pgdn capslock a..l semicolon quote
+                   enter lshift z..m comma period slash rshift up lctrl lwin
+                   lalt space ralt fn menu rctrl left down right, numpad keys
+                   kp0..kp9 etc. Common aliases work (escape, ctrl, win, del).
+                   `apexide keys` lists them all.
+    raw LED codes  0x87
+    groups         all letters numbers fkeys wasd arrows nav modifiers numpad
+  Quote a selector that contains spaces: apexide set 'q w e' red
+
+OUTPUT AND EXIT CODES
+  Output is human-readable text by default. With --json the daemon's JSON
+  response is printed unchanged, and errors print {\"error\": \"...\"} to stdout.
+    0  success
+    1  request rejected or failed (bad color, unknown key, ...)
+    2  invalid command line
+    3  daemon not reachable (start it with `apexide daemon`)
+
+EXAMPLES
+  apexide effect wave --period-ms 2500
+  apexide set wasd red esc white
+  apexide flash fkeys red -d 2000 -b 150
+  apexide oled text \"build passed\"
+  apexide profile save gaming
+
+Run `apexide <command> --help` for one command, or `apexide reference`
+(alias: --help-verbose) for every command's full help at once.";
 
 /// Control SteelSeries Apex keyboards: per-key RGB, effects, OLED and profiles.
 ///
-/// Every command talks to the apexide daemon. Pass --json to get the raw API
-/// response (stable, machine-readable), which is what scripts and agents
-/// should use. `apexide schema` describes everything the API can do.
+/// apexide is a Linux replacement for SteelSeries GG. A small daemon drives
+/// the keyboard, and this CLI exposes everything it can do, both for people
+/// and for scripts and agents (add --json).
 #[derive(Parser)]
-#[command(version, propagate_version = true)]
+#[command(
+    version,
+    propagate_version = true,
+    after_help = "Run `apexide --help` for concepts, color and key syntax, and exit codes,\nor `apexide reference` for the full help of every command.",
+    after_long_help = OVERVIEW
+)]
 struct Cli {
-    /// Daemon socket [env: APEXIDE_SOCKET; default: $XDG_RUNTIME_DIR/apexide.sock]
-    #[arg(long, global = true)]
+    /// Daemon socket [env: APEXIDE_SOCKET] [default: $XDG_RUNTIME_DIR/apexide.sock]
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        help_heading = "Global options"
+    )]
     socket: Option<PathBuf>,
-    /// Print raw JSON responses.
-    #[arg(long, global = true)]
+    /// Print the raw JSON response (or {"error": ...}) instead of text.
+    #[arg(long, global = true, help_heading = "Global options")]
     json: bool,
     #[command(subcommand)]
     cmd: Cmd,
@@ -29,39 +93,79 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Run the daemon that owns the keyboard (foreground).
+    ///
+    /// Only one daemon can run at a time. It reconnects when the keyboard is
+    /// replugged, and on SIGINT/SIGTERM it hands lighting back to the keyboard
+    /// and clears the OLED. Set RUST_LOG=debug for verbose logs.
+    #[command(
+        after_long_help = "EXAMPLES\n  apexide daemon\n  apexide daemon --tcp 127.0.0.1:7171\n  systemctl --user enable --now apexide   # see packaging/apexide.service"
+    )]
     Daemon {
-        /// Also serve the API over TCP, e.g. 127.0.0.1:7171.
-        #[arg(long)]
+        /// Also serve the HTTP API over TCP. Keep it on localhost; there is no auth.
+        #[arg(long, value_name = "ADDR")]
         tcp: Option<SocketAddr>,
-        /// Where state and profiles are stored [default: ~/.config/apexide].
-        #[arg(long)]
+        /// Where state and profiles are stored [default: $XDG_CONFIG_HOME/apexide]
+        #[arg(long, value_name = "DIR")]
         config_dir: Option<PathBuf>,
     },
-    /// Connection, device and current settings.
+    /// Show the connected keyboard and current lighting, OLED and profiles.
     Status,
-    /// List key names usable in selectors.
+    /// List key names, aliases and groups usable in key selectors.
+    ///
+    /// With --json, each key also has its LED code and physical position
+    /// (x, y, w in key units), which is enough to draw the keyboard.
     Keys {
+        /// Layout to list [default: the connected keyboard's, else tkl]
         #[arg(long, value_enum)]
         form: Option<Form>,
     },
-    /// API overview: effects, OLED modes, endpoints, color and key syntax.
+    /// Print the HTTP API description as JSON (works without the daemon).
     Schema,
-    /// Paint every key one color and drop per-key overrides.
+    /// Print the full help of every command (alias: --help-verbose).
+    Reference,
+    /// Paint every key one color and remove all per-key overrides.
+    ///
+    /// Same as `effect static --color COLOR` followed by `clear`.
+    #[command(after_long_help = "EXAMPLES\n  apexide fill '#002244'\n  apexide fill warm")]
     Fill { color: String },
-    /// Set per-key colors: `apexide set wasd red esc '#00ff00'`.
-    #[command(arg_required_else_help = true)]
+    /// Give keys fixed colors on top of the current effect.
+    ///
+    /// Takes alternating SELECTOR COLOR pairs. Overrides stay until cleared
+    /// with `clear`, `fill`, or by applying a profile.
+    #[command(
+        arg_required_else_help = true,
+        after_long_help = "EXAMPLES\n  apexide set wasd red\n  apexide set wasd red esc white 'f1 f2 f3' '#00ff88'\n  apexide set 0x87 blue"
+    )]
     Set {
-        /// Alternating SELECTOR COLOR pairs.
         #[arg(num_args = 2.., value_names = ["SELECTOR", "COLOR"])]
         pairs: Vec<String>,
     },
-    /// Remove per-key overrides (all, or only the given selector).
+    /// Remove per-key overrides: all of them, or those matching SELECTOR.
     Clear { selector: Option<String> },
-    /// Run a lighting effect.
+    /// Set the whole-board lighting effect.
+    ///
+    /// Options that do not apply to the chosen effect are ignored.
+    ///   off        all LEDs off
+    ///   static     --color (required)
+    ///   breathe    --color (required), --period-ms [3000]
+    ///   spectrum   whole board cycles hues; --period-ms [10000]
+    ///   wave       rainbow sweep; --period-ms [3000], --wavelength [18],
+    ///              --direction [right]
+    ///   gradient   --from, --to (required), --direction [right]
+    ///   twinkle    --color (required), --background [#000000], --period-ms [3000]
+    ///   onboard    the keyboard's own lighting; overrides and flashes still
+    ///              show on their keys
+    ///
+    /// Effects are rendered by the daemon at about 30 fps.
+    #[command(
+        verbatim_doc_comment,
+        about = "Set the whole-board lighting effect",
+        after_long_help = "EXAMPLES\n  apexide effect wave --period-ms 2500 --direction left\n  apexide effect breathe -c cyan -p 4000\n  apexide effect gradient --from purple --to orange -d down\n  apexide effect twinkle -c white --background '#000022'\n  apexide effect onboard"
+    )]
     Effect {
         #[arg(value_enum)]
         name: EffectName,
-        /// Color for static, breathe, twinkle.
+        /// Main color (static, breathe, twinkle).
         #[arg(long, short)]
         color: Option<String>,
         /// Gradient start color.
@@ -73,103 +177,153 @@ enum Cmd {
         /// Twinkle background color.
         #[arg(long)]
         background: Option<String>,
-        /// Effect cycle length in milliseconds.
-        #[arg(long, short)]
+        /// Length of one effect cycle in milliseconds.
+        #[arg(long, short, value_name = "MS")]
         period_ms: Option<u32>,
-        /// Wave width in key units.
-        #[arg(long)]
+        /// Width of one full rainbow in key units (wave).
+        #[arg(long, value_name = "KEYS")]
         wavelength: Option<f32>,
+        /// Direction of travel (wave, gradient).
         #[arg(long, short, value_enum)]
         direction: Option<Dir>,
     },
-    /// Global lighting brightness, 0-100.
+    /// Set global lighting brightness, 0-100.
+    ///
+    /// Applied by the daemon to everything it draws. Onboard lighting itself
+    /// follows the keyboard's own brightness keys instead.
     Brightness { percent: u8 },
-    /// Temporarily highlight keys.
+    /// Highlight keys temporarily, steady or blinking.
+    ///
+    /// Flashes sit above overrides and expire on their own. Several can be
+    /// active at once, and the newest wins where they overlap.
+    #[command(
+        after_long_help = "EXAMPLES\n  apexide flash esc red\n  apexide flash fkeys orange -d 5000 -b 250"
+    )]
     Flash {
         selector: String,
         color: String,
-        #[arg(long, short, default_value_t = 1000)]
+        /// How long the flash lasts (max 600000).
+        #[arg(long, short, default_value_t = 1000, value_name = "MS")]
         duration_ms: u64,
-        /// Blink at this interval instead of holding steady.
-        #[arg(long, short)]
+        /// Toggle on and off at this interval instead of holding steady.
+        #[arg(long, short, value_name = "MS")]
         blink_ms: Option<u32>,
     },
-    /// Give lighting back to the keyboard's onboard profile.
+    /// Hand lighting back to the keyboard's onboard profile.
+    ///
+    /// Same as `effect onboard`. Any overrides stay on their keys; run
+    /// `clear` first to hand back the whole board.
     Onboard,
-    /// Colors the daemon is currently sending, per key.
+    /// Print the color each key is being sent right now.
     Frame,
-    /// Control the OLED screen.
+    /// Control the 128x40 OLED screen.
     #[command(subcommand)]
     Oled(OledCmd),
-    /// Save and restore complete setups.
+    /// Save, apply and manage named setups (lighting and OLED together).
     #[command(subcommand)]
     Profile(ProfileCmd),
+    /// Send a request straight to the HTTP API (see `apexide schema`).
+    ///
+    /// BODY is JSON, or @FILE to send a file's raw bytes (images).
+    /// The response is always printed as JSON.
+    #[command(
+        after_long_help = "EXAMPLES\n  apexide raw GET /v1/lighting\n  apexide raw PUT /v1/lighting '{\"effect\":{\"type\":\"off\"},\"keys\":{\"esc\":\"red\"},\"brightness\":80}'\n  apexide raw POST '/v1/oled/image?fit=cover' @photo.png"
+    )]
+    Raw {
+        /// GET, POST, PUT or DELETE.
+        method: String,
+        /// Path including any query string, e.g. /v1/status.
+        path: String,
+        body: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
 enum OledCmd {
-    /// Show text (auto-sized and word-wrapped).
+    /// Show text, sized automatically and word-wrapped.
+    ///
+    /// The largest font that fits is used: about 12 characters x 2 lines at
+    /// the biggest, down to 32 x 6 at the smallest. Newlines in the text
+    /// start a new line.
+    #[command(
+        after_long_help = "EXAMPLES\n  apexide oled text hello world\n  apexide oled text --align left \"$(printf 'line one\\nline two')\""
+    )]
     Text {
+        /// Words are joined with spaces.
         #[arg(required = true)]
         text: Vec<String>,
         #[arg(long, short, value_enum, default_value = "center")]
         align: AlignArg,
     },
-    /// Show a PNG, JPEG, BMP or animated GIF.
+    /// Show a PNG, JPEG, BMP or animated GIF, converted to 1-bit.
+    ///
+    /// GIFs loop with their own frame timing. Photos look best dithered (the
+    /// default); logos and line art look best with --no-dither.
+    #[command(
+        after_long_help = "EXAMPLES\n  apexide oled image cat.gif\n  apexide oled image logo.png --fit stretch --no-dither --threshold 100"
+    )]
     Image {
         path: PathBuf,
+        /// contain: fit inside, keep aspect; cover: fill and crop; stretch: exact 128x40.
         #[arg(long, value_enum, default_value = "contain")]
         fit: FitArg,
-        /// Threshold instead of dithering (better for line art).
+        /// Use a plain threshold instead of Floyd-Steinberg dithering.
         #[arg(long)]
         no_dither: bool,
-        /// Luma cutoff 0-255 when not dithering.
+        /// Brightness cutoff 0-255 used with --no-dither.
         #[arg(long, default_value_t = 128)]
         threshold: u8,
+        /// Swap black and white.
         #[arg(long)]
         invert: bool,
     },
     /// Show a clock.
+    #[command(
+        after_long_help = "EXAMPLES\n  apexide oled clock\n  apexide oled clock -f '%H:%M:%S'\n  apexide oled clock -f '%a %d %b'"
+    )]
     Clock {
         /// strftime format.
         #[arg(long, short, default_value = "%H:%M")]
         format: String,
     },
-    /// Show CPU and RAM usage.
+    /// Show live CPU and RAM usage bars.
     Sysinfo,
-    /// Turn the screen off.
+    /// Turn the screen off (stays off).
     Blank,
     /// Clear the screen and stop drawing on it.
     Release,
-    /// Pop up a message for a while, then return to the current mode.
+    /// Show a message over the current mode for a while.
+    #[command(
+        after_long_help = "EXAMPLES\n  apexide oled notify \"Build passed\"\n  apexide oled notify -d 10000 \"Meeting in 5 min\""
+    )]
     Notify {
+        /// Words are joined with spaces.
         #[arg(required = true)]
         text: Vec<String>,
-        #[arg(long, short, default_value_t = 5000)]
+        #[arg(long, short, default_value_t = 5000, value_name = "MS")]
         duration_ms: u64,
     },
-    /// Print what the screen shows right now as ASCII art.
+    /// Print what the screen shows right now as ASCII art (# = lit).
     Preview,
-    /// Current OLED mode.
+    /// Show the current OLED mode.
     Status,
 }
 
 #[derive(Subcommand)]
 enum ProfileCmd {
+    /// List saved profiles.
     List,
-    /// Save the current lighting and OLED setup.
-    Save {
-        name: String,
-    },
-    Apply {
-        name: String,
-    },
-    Show {
-        name: String,
-    },
-    Delete {
-        name: String,
-    },
+    /// Save the current lighting and OLED setup under NAME.
+    ///
+    /// Names may contain letters, digits, '-' and '_'. An existing profile
+    /// with the same name is overwritten.
+    Save { name: String },
+    /// Replace the current setup with a saved profile.
+    Apply { name: String },
+    /// Print a profile's contents.
+    Show { name: String },
+    /// Delete a saved profile.
+    Delete { name: String },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -216,15 +370,53 @@ fn value_name<T: ValueEnum>(v: T) -> String {
     v.to_possible_value().unwrap().get_name().to_string()
 }
 
+/// Full help of the top-level command and every subcommand.
+fn reference() -> String {
+    fn walk(cmd: &mut clap::Command, path: &str, out: &mut String) {
+        for sub in cmd.get_subcommands_mut() {
+            if sub.get_name() == "help" {
+                continue;
+            }
+            let path = format!("{path} {}", sub.get_name());
+            out.push_str(&format!(
+                "\n\n{}\n{path}\n{}\n\n",
+                "=".repeat(78),
+                "=".repeat(78)
+            ));
+            out.push_str(&sub.render_long_help().to_string());
+            walk(sub, &path, out);
+        }
+    }
+    let mut root = Cli::command();
+    root.build();
+    let mut out = root.render_long_help().to_string();
+    walk(&mut root, "apexide", &mut out);
+    out
+}
+
 fn main() {
-    if let Err(e) = run() {
-        eprintln!("error: {e:#}");
-        std::process::exit(1);
+    if std::env::args().skip(1).any(|a| a == "--help-verbose") {
+        print!("{}", reference());
+        return;
+    }
+    let cli = Cli::parse();
+    let json = cli.json;
+    if let Err(e) = run(cli) {
+        if json {
+            println!("{}", json!({ "error": format!("{e:#}") }));
+        } else {
+            eprintln!("error: {e:#}");
+        }
+        let code = if e.downcast_ref::<DaemonDown>().is_some() {
+            3
+        } else {
+            1
+        };
+        std::process::exit(code);
     }
 }
 
-fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+fn run(cli: Cli) -> anyhow::Result<()> {
     let socket = cli
         .socket
         .clone()
@@ -255,7 +447,18 @@ fn run() -> anyhow::Result<()> {
             let q = form.map(|f| format!("?form={}", value_name(f))).unwrap_or_default();
             (c.get(&format!("/v1/keys{q}"))?, fmt_keys)
         }
-        Cmd::Schema => (c.get("/v1/schema")?, |v| serde_json::to_string_pretty(v).unwrap()),
+        Cmd::Schema => (apexide_daemon::api::schema(), |v| serde_json::to_string_pretty(v).unwrap()),
+        Cmd::Reference => (Value::String(reference()), |v| v.as_str().unwrap_or_default().to_string()),
+        Cmd::Raw { method, path, body } => {
+            let body = match body {
+                None => Body::None,
+                Some(b) => match b.strip_prefix('@') {
+                    Some(file) => Body::Bytes(std::fs::read(file).with_context(|| format!("reading {file}"))?),
+                    None => Body::Json(serde_json::from_str(&b).context("BODY is not valid JSON (use @FILE for raw bytes)")?),
+                },
+            };
+            (c.request(&method.to_ascii_uppercase(), &path, body)?, |v| serde_json::to_string_pretty(v).unwrap())
+        }
         Cmd::Fill { color } => (c.post("/v1/lighting/fill", json!({ "color": color }))?, fmt_lighting),
         Cmd::Set { pairs } => {
             if pairs.len() % 2 != 0 {

@@ -10,6 +10,11 @@ use std::{
 use anyhow::{Context, anyhow, bail};
 use serde_json::Value;
 
+/// The daemon socket could not be reached.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct DaemonDown(String);
+
 pub struct Client {
     pub socket: PathBuf,
 }
@@ -35,11 +40,11 @@ impl Client {
 
     pub fn request(&self, method: &str, path: &str, body: Body) -> anyhow::Result<Value> {
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
-            anyhow!(
-                "cannot reach the apexide daemon at {} ({e}).\n\
+            DaemonDown(format!(
+                "cannot reach the apexide daemon at {} ({e}). \
                  Start it with `apexide daemon`, or `systemctl --user enable --now apexide`.",
                 self.socket.display()
-            )
+            ))
         })?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
 

@@ -145,7 +145,7 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route("/v1/status", get(status))
         .route("/v1/keys", get(list_keys))
-        .route("/v1/schema", get(schema))
+        .route("/v1/schema", get(schema_handler))
         .route("/v1/lighting", get(get_lighting).put(put_lighting))
         .route("/v1/lighting/effect", post(set_effect))
         .route("/v1/lighting/fill", post(fill))
@@ -508,9 +508,13 @@ async fn delete_profile(st: St, Path(name): Path<String>) -> Res {
     Ok(Json(json!({ "deleted": name })))
 }
 
+async fn schema_handler() -> Json<Value> {
+    Json(schema())
+}
+
 /// Machine-readable overview of the API, aimed at agents and GUI builders.
-async fn schema() -> Res {
-    Ok(Json(json!({
+pub fn schema() -> Value {
+    json!({
         "colors": "#rrggbb, #rgb, or one of: off black white red green blue yellow orange cyan teal magenta purple pink warm",
         "key_selectors": "comma/space separated key names (GET /v1/keys), raw codes like 0x87, or groups: all letters numbers fkeys wasd arrows nav modifiers numpad",
         "effects": {
@@ -553,5 +557,5 @@ async fn schema() -> Res {
             "GET|PUT|DELETE /v1/profiles/{name}",
             "POST /v1/profiles/{name}/apply"
         ]
-    })))
+    })
 }

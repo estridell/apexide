@@ -81,11 +81,20 @@ LED codes (`0x87`), or groups (`all letters numbers fkeys wasd arrows nav modifi
 
 ## For agents and scripts
 
-Add `--json` to any command to get the raw API response. `apexide schema` (`GET /v1/schema`)
-lists every effect, OLED mode, endpoint and syntax rule in a single JSON document.
-`apexide oled preview` lets an agent check what it drew without seeing the keyboard.
+The CLI is the agent interface; there is no separate MCP server or SDK to learn.
 
-You can also call the API directly:
+- `apexide --help` explains the lighting layers, color and key syntax, output format and
+  exit codes. `apexide reference` (or `--help-verbose`) prints the full help of every
+  command at once, so one read covers the whole tool. Neither needs the daemon running.
+- Add `--json` to any command to get the daemon's JSON response unchanged. Errors print as
+  `{"error": "..."}`.
+- Exit codes: `0` success, `1` request rejected or failed, `2` invalid command line, `3` daemon
+  not reachable.
+- `apexide oled preview` and `apexide frame` let an agent check what it drew without seeing
+  the keyboard.
+- `apexide raw METHOD PATH [BODY|@FILE]` reaches any API endpoint (`apexide schema` lists them).
+
+The API can also be called directly:
 
 ```sh
 curl --unix-socket $XDG_RUNTIME_DIR/apexide.sock http://apexide/v1/status
