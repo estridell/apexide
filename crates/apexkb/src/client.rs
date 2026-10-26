@@ -41,8 +41,8 @@ impl Client {
     pub fn request(&self, method: &str, path: &str, body: Body) -> anyhow::Result<Value> {
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
             DaemonDown(format!(
-                "cannot reach the apexide daemon at {} ({e}). \
-                 Start it with `apexide daemon`, or `systemctl --user enable --now apexide`.",
+                "cannot reach the apexkb daemon at {} ({e}). \
+                 Start it with `apexkb daemon`, or `systemctl --user enable --now apexkb`.",
                 self.socket.display()
             ))
         })?;
@@ -53,7 +53,7 @@ impl Client {
             Body::Json(v) => (Some("application/json"), serde_json::to_vec(&v)?),
             Body::Bytes(b) => (Some("application/octet-stream"), b),
         };
-        let mut req = format!("{method} {path} HTTP/1.1\r\nHost: apexide\r\nConnection: close\r\n");
+        let mut req = format!("{method} {path} HTTP/1.1\r\nHost: apexkb\r\nConnection: close\r\n");
         if let Some(ct) = ctype {
             req += &format!(
                 "Content-Type: {ct}\r\nContent-Length: {}\r\n",

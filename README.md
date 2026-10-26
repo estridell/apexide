@@ -1,6 +1,6 @@
 <img src="assets/icon.svg" width="64" height="64" alt="">
 
-# apexide
+# apexkb-rs
 
 SteelSeries GG for Linux, minus the GUI: a Rust backend that drives SteelSeries Apex
 keyboards (per-key RGB, effects, OLED screen, profiles) and exposes it all through a
@@ -18,9 +18,9 @@ use the same API or embed the daemon crate directly.
 
 ```
 crates/
-  apexide-core     hidraw I/O, packet encoders, key layout, OLED rendering (no async, no daemon)
-  apexide-daemon   render thread + effects engine + HTTP API + persisted state/profiles
-  apexide          the `apexide` binary: `apexide daemon` plus the CLI client
+  apexkb-core     hidraw I/O, packet encoders, key layout, OLED rendering (no async, no daemon)
+  apexkb-daemon   render thread + effects engine + HTTP API + persisted state/profiles
+  apexkb          the `apexkb` binary: `apexkb daemon` plus the CLI client
 ```
 
 - **One owner.** Only the daemon's render thread talks to the keyboard. API calls change
@@ -29,44 +29,44 @@ crates/
   It reconnects on replug and returns the keyboard to onboard lighting when it exits.
 - **Layers.** Base effect, then per-key overrides, then temporary flashes, then global
   brightness. On the OLED, a temporary notification sits on top of the current mode.
-- **Persistent.** Lighting is saved to `~/.config/apexide/state.json` and the OLED mode to
+- **Persistent.** Lighting is saved to `~/.config/apexkb/state.json` and the OLED mode to
   `oled.json` next to it, each whenever it changes.
-  Profiles are named snapshots in `~/.config/apexide/profiles/`.
-- **Transport.** HTTP on the Unix socket `$XDG_RUNTIME_DIR/apexide.sock`, with optional
+  Profiles are named snapshots in `~/.config/apexkb/profiles/`.
+- **Transport.** HTTP on the Unix socket `$XDG_RUNTIME_DIR/apexkb.sock`, with optional
   TCP (`--tcp 127.0.0.1:7171`).
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/estridell/apexide/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/estridell/apexkb-rs/main/install.sh | sh
 ```
 
-This downloads the latest release binary (static, x86_64) to `~/.local/bin/apexide`,
+This downloads the latest release binary (static, x86_64) to `~/.local/bin/apexkb`,
 installs the udev rule so your user can access the keyboard (asks for sudo), and
-enables the `apexide` systemd user service. Skip parts with
-`| sh -s -- --no-udev --no-service`, or pick another directory with `APEXIDE_BIN_DIR`.
+enables the `apexkb` systemd user service. Skip parts with
+`| sh -s -- --no-udev --no-service`, or pick another directory with `APEXKB_BIN_DIR`.
 
 ```sh
-apexide update --check                  # is there a newer release?
-apexide update                          # install it and restart the service
+apexkb update --check                  # is there a newer release?
+apexkb update                          # install it and restart the service
 ```
 
 ### From source
 
 ```sh
 # 1. Let your user access the keyboard (no root needed afterwards)
-sudo cp packaging/70-apexide.rules /etc/udev/rules.d/
+sudo cp packaging/70-apexkb.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
 
 # 2. Install to ~/.local/bin
-cargo install --path crates/apexide --root ~/.local
+cargo install --path crates/apexkb --root ~/.local
 
 # 3. Run the daemon (foreground), or as a user service
-apexide daemon
-cp packaging/apexide.service ~/.config/systemd/user/ && systemctl --user enable --now apexide
+apexkb daemon
+cp packaging/apexkb.service ~/.config/systemd/user/ && systemctl --user enable --now apexkb
 ```
 
-Source builds report a `-dev` version (`0.1.0-dev`), which `apexide update` treats as
+Source builds report a `-dev` version (`0.1.0-dev`), which `apexkb update` treats as
 older than any release on that line.
 
 ### Releases
@@ -79,28 +79,28 @@ merge releases `v0.2.0`, and the next one `v0.2.1`.
 ## CLI
 
 ```sh
-apexide status                          # device, current lighting/OLED, profiles
-apexide keys                            # key names and groups for selectors
-apexide fill '#002244'                  # whole board one color
-apexide set wasd red esc white          # per-key overrides (selector, color pairs)
-apexide clear wasd                      # drop overrides (all if no selector)
-apexide effect wave --period-ms 2500    # off static breathe spectrum wave gradient twinkle onboard
-apexide effect gradient --from purple --to cyan -d down
-apexide brightness 60
-apexide flash fkeys red -d 2000 -b 150  # temporary blinking highlight
-apexide onboard                         # hand lighting back to the keyboard
-apexide frame                           # colors currently being sent
+apexkb status                          # device, current lighting/OLED, profiles
+apexkb keys                            # key names and groups for selectors
+apexkb fill '#002244'                  # whole board one color
+apexkb set wasd red esc white          # per-key overrides (selector, color pairs)
+apexkb clear wasd                      # drop overrides (all if no selector)
+apexkb effect wave --period-ms 2500    # off static breathe spectrum wave gradient twinkle onboard
+apexkb effect gradient --from purple --to cyan -d down
+apexkb brightness 60
+apexkb flash fkeys red -d 2000 -b 150  # temporary blinking highlight
+apexkb onboard                         # hand lighting back to the keyboard
+apexkb frame                           # colors currently being sent
 
-apexide oled text "hello world"         # auto-sized, word-wrapped
-apexide oled image cat.gif              # PNG/JPEG/BMP/animated GIF, dithered to 1-bit
-apexide oled clock -f '%H:%M:%S'
-apexide oled sysinfo                    # CPU/RAM bars (default)
-apexide oled notify "Build passed" -d 3000
-apexide oled preview                    # ASCII art of what the screen shows
-apexide oled release                    # clear the screen and stop drawing on it
+apexkb oled text "hello world"         # auto-sized, word-wrapped
+apexkb oled image cat.gif              # PNG/JPEG/BMP/animated GIF, dithered to 1-bit
+apexkb oled clock -f '%H:%M:%S'
+apexkb oled sysinfo                    # CPU/RAM bars (default)
+apexkb oled notify "Build passed" -d 3000
+apexkb oled preview                    # ASCII art of what the screen shows
+apexkb oled release                    # clear the screen and stop drawing on it
 
-apexide profile save gaming
-apexide profile apply gaming
+apexkb profile save gaming
+apexkb profile apply gaming
 ```
 
 **Colors:** `#rrggbb`, `#rgb`, or names (`red`, `cyan`, `warm`, `off`, ...).
@@ -111,24 +111,24 @@ LED codes (`0x87`), or groups (`all letters numbers fkeys wasd arrows nav modifi
 
 The CLI is the agent interface; there is no separate MCP server or SDK to learn.
 
-- `apexide --help` explains the lighting layers, color and key syntax, output format and
-  exit codes. `apexide reference` (or `--help-verbose`) prints the full help of every
+- `apexkb --help` explains the lighting layers, color and key syntax, output format and
+  exit codes. `apexkb reference` (or `--help-verbose`) prints the full help of every
   command at once, so one read covers the whole tool. Neither needs the daemon running.
 - Add `--json` to any command to get the daemon's JSON response unchanged. Errors print as
   `{"error": "..."}`.
 - Exit codes: `0` success, `1` request rejected or failed, `2` invalid command line, `3` daemon
   not reachable.
-- `apexide oled preview` and `apexide frame` let an agent check what it drew without seeing
+- `apexkb oled preview` and `apexkb frame` let an agent check what it drew without seeing
   the keyboard.
-- `apexide raw METHOD PATH [BODY|@FILE]` reaches any API endpoint (`apexide schema` lists them).
+- `apexkb raw METHOD PATH [BODY|@FILE]` reaches any API endpoint (`apexkb schema` lists them).
 
 The API can also be called directly:
 
 ```sh
-curl --unix-socket $XDG_RUNTIME_DIR/apexide.sock http://apexide/v1/status
-curl --unix-socket $XDG_RUNTIME_DIR/apexide.sock http://apexide/v1/lighting/effect \
+curl --unix-socket $XDG_RUNTIME_DIR/apexkb.sock http://apexkb/v1/status
+curl --unix-socket $XDG_RUNTIME_DIR/apexkb.sock http://apexkb/v1/lighting/effect \
   -H 'content-type: application/json' -d '{"type":"breathe","color":"#ff4400","period_ms":4000}'
-curl --unix-socket $XDG_RUNTIME_DIR/apexide.sock 'http://apexide/v1/oled/image?fit=cover' \
+curl --unix-socket $XDG_RUNTIME_DIR/apexkb.sock 'http://apexkb/v1/oled/image?fit=cover' \
   --data-binary @picture.png
 ```
 
@@ -157,7 +157,7 @@ daemon rewrites the OLED every 250 ms, which clears the menu frame right after i
 (verified on the Apex 7 TKL). `release` mode never draws, so the menu frame stays there.
 
 LED codes are HID usage codes, plus `0xF0` for the SteelSeries/Fn key. The Apex 7 TKL does
-not answer the brightness read-back (`0xA3`), so apexide applies brightness in software.
+not answer the brightness read-back (`0xA3`), so apexkb applies brightness in software.
 
 Credits: protocol details come from [OpenRGB](https://gitlab.com/CalcProgrammer1/OpenRGB)
 and [apex-tux](https://github.com/not-jan/apex-tux).

@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use apexide_core::{
+use apexkb_core::{
     FormFactor, KeyCode, Rgb, keys,
     oled::{self, Align, ImageOptions},
 };
@@ -567,7 +567,7 @@ pub fn schema() -> Value {
             "onboard": {}
         },
         "oled_modes": {
-            "release": "apexide clears the OLED once and stops drawing on it",
+            "release": "apexkb clears the OLED once and stops drawing on it",
             "blank": "screen off",
             "text": { "text": "string", "align": "left|center|right" },
             "image": "POST raw PNG/JPEG/BMP/GIF bytes to /v1/oled/image?fit=contain|cover|stretch&dither=true&invert=false&threshold=128",

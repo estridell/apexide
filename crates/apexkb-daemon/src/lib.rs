@@ -1,4 +1,4 @@
-//! The apexide daemon: owns the keyboard, runs software effects and the OLED,
+//! The apexkb daemon: owns the keyboard, runs software effects and the OLED,
 //! and serves an HTTP/JSON API over a Unix socket (and optionally TCP).
 //!
 //! GUI apps can embed it with [`serve`], or drive a running daemon over the
@@ -22,10 +22,10 @@ use tokio::net::{TcpListener, UnixListener, UnixStream};
 
 use crate::{api::App, engine::Engine, state::Shared, store::Store};
 
-/// The release version (`0.1.7`), set by CI through `APEXIDE_VERSION` at build
+/// The release version (`0.1.7`), set by CI through `APEXKB_VERSION` at build
 /// time. Local builds report the workspace version with a `-dev` suffix, which
 /// sorts below every release of that version.
-pub const VERSION: &str = match option_env!("APEXIDE_VERSION") {
+pub const VERSION: &str = match option_env!("APEXKB_VERSION") {
     Some(v) => v,
     None => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
 };
@@ -37,12 +37,12 @@ pub struct ServeOptions {
     pub config_dir: PathBuf,
 }
 
-/// Default socket path: `$XDG_RUNTIME_DIR/apexide.sock`.
+/// Default socket path: `$XDG_RUNTIME_DIR/apexkb.sock`.
 pub fn default_socket() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("apexide.sock")
+        .join("apexkb.sock")
 }
 
 /// Run the daemon until SIGINT/SIGTERM, then restore onboard lighting.
@@ -50,7 +50,7 @@ pub async fn serve(opts: ServeOptions) -> anyhow::Result<()> {
     if opts.socket.exists() {
         if UnixStream::connect(&opts.socket).await.is_ok() {
             bail!(
-                "another apexide daemon is already listening on {}",
+                "another apexkb daemon is already listening on {}",
                 opts.socket.display()
             );
         }

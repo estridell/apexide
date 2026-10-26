@@ -1,7 +1,7 @@
 //! Self-update from GitHub releases.
 //!
 //! Every merge to main publishes a release `vX.Y.N` with a static Linux binary
-//! named `apexide-<arch>-linux` and its `.sha256`. Updating downloads that
+//! named `apexkb-<arch>-linux` and its `.sha256`. Updating downloads that
 //! binary next to the running one, checks the hash and renames it over the
 //! old file, which is safe while the old binary (or the daemon) is running.
 //!
@@ -16,14 +16,14 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use apexide_daemon::VERSION;
+use apexkb_daemon::VERSION;
 use semver::Version;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const REPO: &str = "estridell/apexide";
-const SERVICE: &str = "apexide.service";
+const REPO: &str = "estridell/apexkb-rs";
+const SERVICE: &str = "apexkb.service";
 
 #[derive(Deserialize)]
 struct Release {
@@ -40,7 +40,7 @@ struct Asset {
 }
 
 pub fn asset_name() -> String {
-    format!("apexide-{}-linux", std::env::consts::ARCH)
+    format!("apexkb-{}-linux", std::env::consts::ARCH)
 }
 
 /// Check the latest release and, unless `check_only`, install it over the
@@ -110,7 +110,7 @@ pub fn run(check_only: bool, force: bool) -> anyhow::Result<Value> {
 
 fn get(url: &str) -> anyhow::Result<ureq::Body> {
     let resp = ureq::get(url)
-        .header("User-Agent", &format!("apexide/{VERSION}"))
+        .header("User-Agent", &format!("apexkb/{VERSION}"))
         .header("Accept", "application/vnd.github+json")
         .call()
         .with_context(|| format!("GET {url}"))?;
@@ -122,7 +122,7 @@ fn replace_binary(exe: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let dir = exe
         .parent()
         .ok_or_else(|| anyhow!("{} has no parent directory", exe.display()))?;
-    let tmp: PathBuf = dir.join(".apexide.update");
+    let tmp: PathBuf = dir.join(".apexkb.update");
     let write = || -> std::io::Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
@@ -133,7 +133,7 @@ fn replace_binary(exe: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     write().map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
-            " (install apexide somewhere you can write, like ~/.local/bin, or run with sudo)"
+            " (install apexkb somewhere you can write, like ~/.local/bin, or run with sudo)"
         } else {
             ""
         };
@@ -160,18 +160,18 @@ pub fn describe(v: &Value) -> String {
     let latest = v["latest"].as_str().unwrap_or("?");
     if v["updated"] == true {
         let mut s = format!(
-            "updated apexide {current} -> {latest} ({})",
+            "updated apexkb {current} -> {latest} ({})",
             v["path"].as_str().unwrap_or("?")
         );
         if v["service_restarted"] == true {
-            s += "\nrestarted apexide.service";
+            s += "\nrestarted apexkb.service";
         } else {
             s += "\nrestart the daemon if it is running to use the new version";
         }
         s
     } else if v["update_available"] == true {
-        format!("apexide {latest} is available (this is {current}); run `apexide update`")
+        format!("apexkb {latest} is available (this is {current}); run `apexkb update`")
     } else {
-        format!("apexide {current} is up to date (latest release: {latest})")
+        format!("apexkb {current} is up to date (latest release: {latest})")
     }
 }

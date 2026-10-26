@@ -4,7 +4,7 @@ use crate::keys::FormFactor;
 
 pub const STEELSERIES_VID: u16 = 0x1038;
 
-/// A keyboard model apexide knows how to drive.
+/// A keyboard model apexkb knows how to drive.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Model {
     pub pid: u16,

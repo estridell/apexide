@@ -1,5 +1,5 @@
 //! On-disk persistence: current settings and named profiles, as JSON under
-//! `$XDG_CONFIG_HOME/apexide`.
+//! `$XDG_CONFIG_HOME/apexkb`.
 //!
 //! The current lighting lives in `state.json` and the OLED mode in
 //! `oled.json`, so lighting changes do not rewrite image frames.
@@ -41,7 +41,7 @@ impl Store {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("apexide")
+            .join("apexkb")
     }
 
     fn state_path(&self) -> PathBuf {
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn profile_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("apexide-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("apexkb-test-{}", std::process::id()));
         let store = Store::new(dir.clone());
         let mut s = Settings::default();
         s.lighting.effect = Effect::Spectrum { period_ms: 1234 };
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn state_split_and_migration() {
-        let dir = std::env::temp_dir().join(format!("apexide-state-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("apexkb-state-{}", std::process::id()));
         let store = Store::new(dir.clone());
         assert!(matches!(
             store.load_state().unwrap().oled,

@@ -322,7 +322,7 @@ impl fmt::Display for KeyCode {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("unknown key or group {0:?} (see `apexide keys`)")]
+#[error("unknown key or group {0:?} (see `apexkb keys`)")]
 pub struct UnknownKey(pub String);
 
 /// Resolve a selector into LED codes. A selector is a comma- or

@@ -1,5 +1,5 @@
 [package]
-name = "apexide-core"
+name = "apexkb-core"
 description = "Device protocol, key layout and OLED rendering for SteelSeries Apex keyboards"
 version.workspace = true
 edition.workspace = true
