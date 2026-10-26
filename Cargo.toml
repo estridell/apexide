@@ -14,3 +14,5 @@ apexide-daemon = { path = "crates/apexide-daemon" }
 
 [profile.release]
 strip = true
+lto = true
+codegen-units = 1

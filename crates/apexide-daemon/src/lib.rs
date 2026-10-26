@@ -64,7 +64,7 @@ pub async fn serve(opts: ServeOptions) -> anyhow::Result<()> {
         ..Default::default()
     }));
     let engine = Engine::spawn(shared.clone());
-    let router = api::router(App { shared, store });
+    let router = api::router(App::new(shared, store, engine.waker()));
 
     let unix = UnixListener::bind(&opts.socket)
         .with_context(|| format!("binding {}", opts.socket.display()))?;
