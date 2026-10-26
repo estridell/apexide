@@ -4,6 +4,9 @@
 //! named `apexide-<arch>-linux` and its `.sha256`. Updating downloads that
 //! binary next to the running one, checks the hash and renames it over the
 //! old file, which is safe while the old binary (or the daemon) is running.
+//!
+//! The newest release is the highest version, not GitHub's "Latest" flag:
+//! release runs can finish out of order, so the flag may lag behind.
 
 use std::{
     io::Write,
@@ -25,6 +28,7 @@ const SERVICE: &str = "apexide.service";
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
+    prerelease: bool,
     html_url: String,
     assets: Vec<Asset>,
 }
@@ -43,18 +47,18 @@ pub fn asset_name() -> String {
 /// running binary and restart the user service if it is active.
 pub fn run(check_only: bool, force: bool) -> anyhow::Result<Value> {
     let current = Version::parse(VERSION).context("parsing this build's version")?;
-    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let body = match get(&url) {
-        Err(e) if matches!(e.downcast_ref(), Some(ureq::Error::StatusCode(404))) => {
-            bail!("{REPO} has no published releases yet")
-        }
-        r => r?,
-    }
-    .read_to_string()
-    .context("reading the release info")?;
-    let release: Release = serde_json::from_str(&body).context("parsing the release info")?;
-    let latest = Version::parse(release.tag_name.trim_start_matches('v'))
-        .with_context(|| format!("release tag {:?} is not a version", release.tag_name))?;
+    // Listed newest first, so the highest version is on the first page.
+    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=100");
+    let body = get(&url)?
+        .read_to_string()
+        .context("reading the release list")?;
+    let releases: Vec<Release> = serde_json::from_str(&body).context("parsing the release list")?;
+    let (latest, release) = releases
+        .into_iter()
+        .filter(|r| !r.prerelease)
+        .filter_map(|r| Some((Version::parse(r.tag_name.strip_prefix('v')?).ok()?, r)))
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .ok_or_else(|| anyhow!("{REPO} has no published releases yet"))?;
     let available = latest > current;
     let mut out = json!({
         "current": VERSION,

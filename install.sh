@@ -11,7 +11,6 @@
 set -eu
 
 repo=estridell/apexide
-base="https://github.com/$repo/releases/latest/download"
 bin_dir="${APEXIDE_BIN_DIR:-$HOME/.local/bin}"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 udev=1
@@ -41,7 +40,14 @@ command -v sha256sum >/dev/null || die "sha256sum is required"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-say "downloading $asset"
+# The highest version, not GitHub's "Latest" flag, which can lag when release
+# runs finish out of order. Prerelease tags (with a '-') are skipped.
+tag=$(curl -fsSL "https://api.github.com/repos/$repo/releases?per_page=100" |
+    grep -o '"tag_name": *"v[0-9.]*"' | grep -o 'v[0-9.]*' | sort -V | tail -1)
+[ -n "$tag" ] || die "no published releases found"
+base="https://github.com/$repo/releases/download/$tag"
+
+say "downloading $asset $tag"
 curl -fsSL -o "$tmp/$asset" "$base/$asset" ||
     die "no prebuilt binary for $arch; build from source instead (see the README)"
 curl -fsSL -o "$tmp/$asset.sha256" "$base/$asset.sha256"

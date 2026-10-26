@@ -109,17 +109,10 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "$TAG" \
-            --generate-notes \
-            --latest=false
-          # Runs can finish out of order, so instead of letting each new release
-          # become Latest (what `apexide update` and install.sh fetch), every
-          # run marks the highest version. The last run to get here wins, and it
-          # sees every release published before it.
-          highest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
-            --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName' |
-            sort -V | tail -1)
-          gh release edit "$highest" --repo "$GITHUB_REPOSITORY" --latest
-          echo "latest: $highest"
+            --generate-notes
+          # Runs can finish out of order, leaving GitHub's Latest badge on an
+          # older release. Nothing depends on it: `apexide update` and
+          # install.sh pick the highest version from the release list.
 
   # A run that reserved a tag but did not publish frees it again.
   unreserve:
