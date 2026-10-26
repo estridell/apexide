@@ -14,6 +14,15 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::state::{Lighting, OledMode, Settings};
 
+/// Move settings saved before the rename from apexide (the sibling
+/// `apexide` dir) to `dir`, unless `dir` already exists.
+pub fn migrate_legacy_dir(dir: &Path) {
+    let legacy = dir.with_file_name("apexide");
+    if !dir.exists() && legacy.is_dir() {
+        fs::rename(&legacy, dir).ok();
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
     dir: PathBuf,
@@ -36,19 +45,12 @@ impl Store {
         Self { dir }
     }
 
-    /// `$XDG_CONFIG_HOME/apexkb`. Settings saved before the rename from
-    /// apexide are moved over the first time this runs.
     pub fn default_dir() -> PathBuf {
-        let base = std::env::var_os("XDG_CONFIG_HOME")
+        std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))
-            .unwrap_or_else(|| PathBuf::from("."));
-        let dir = base.join("apexkb");
-        let legacy = base.join("apexide");
-        if !dir.exists() && legacy.is_dir() {
-            fs::rename(&legacy, &dir).ok();
-        }
-        dir
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("apexkb")
     }
 
     fn state_path(&self) -> PathBuf {
@@ -208,6 +210,25 @@ mod tests {
             Err(StoreError::NotFound(_))
         ));
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_dir_migration() {
+        let base = std::env::temp_dir().join(format!("apexkb-legacy-{}", std::process::id()));
+        let legacy = base.join("apexide");
+        let dir = base.join("apexkb");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("state.json"), "{}").unwrap();
+
+        migrate_legacy_dir(&dir);
+        assert!(dir.join("state.json").exists());
+        assert!(!legacy.exists());
+
+        // An existing new dir is never overwritten.
+        fs::create_dir_all(&legacy).unwrap();
+        migrate_legacy_dir(&dir);
+        assert!(legacy.exists());
+        fs::remove_dir_all(base).ok();
     }
 
     #[test]

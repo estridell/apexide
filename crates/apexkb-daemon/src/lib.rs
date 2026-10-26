@@ -56,6 +56,19 @@ pub async fn serve(opts: ServeOptions) -> anyhow::Result<()> {
         }
         std::fs::remove_file(&opts.socket).ok();
     }
+    // This project used to be called apexide. A daemon still running under
+    // that name would fight this one for the keyboard and its settings.
+    let legacy = default_socket().with_file_name("apexide.sock");
+    if UnixStream::connect(&legacy).await.is_ok() {
+        bail!(
+            "an old apexide daemon is still running on {}; stop it first \
+             (`systemctl --user disable --now apexide`)",
+            legacy.display()
+        );
+    }
+    if opts.config_dir == Store::default_dir() {
+        store::migrate_legacy_dir(&opts.config_dir);
+    }
 
     let store = Store::new(opts.config_dir);
     let settings = store.load_state().context("loading saved state")?;
