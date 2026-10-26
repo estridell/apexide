@@ -23,9 +23,14 @@ use crate::{
 
 const TICK: Duration = Duration::from_millis(33);
 const RECONNECT_EVERY: Duration = Duration::from_secs(2);
-/// Rewrite unchanged output this often, in case the keyboard's own UI
+/// Rewrite unchanged lighting this often, in case the keyboard's own UI
 /// (brightness keys, profile switching) took over in the meantime.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
+/// Rewrite an unchanged OLED frame this often. The firmware menu (hold the OLED
+/// menu button) ignores our frames while it is open and leaves its last
+/// frame behind when it closes, without reporting either event, so the next
+/// rewrite is what clears it.
+const OLED_REFRESH_EVERY: Duration = Duration::from_millis(250);
 
 pub struct Engine {
     stop: Arc<AtomicBool>,
@@ -62,6 +67,7 @@ struct Output {
     lighting: Option<LightingFrame>,
     oled: Option<Frame>,
     written: Option<Instant>,
+    oled_written: Option<Instant>,
 }
 
 fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>) {
@@ -193,9 +199,13 @@ fn write(
 
     match oled {
         Some(f) => {
-            if refresh || out.oled.as_ref() != Some(&f) {
+            let oled_refresh = out
+                .oled_written
+                .is_none_or(|t| t.elapsed() >= OLED_REFRESH_EVERY);
+            if oled_refresh || out.oled.as_ref() != Some(&f) {
                 kb.draw_oled(&f)?;
                 out.oled = Some(f);
+                out.oled_written = Some(Instant::now());
             }
         }
         // Clear whatever we drew last so it does not linger after a
