@@ -117,6 +117,10 @@ feature report, with no report IDs.
 | `0x90` firmware version | output → input | ASCII reply |
 | `0xFF` serial number | output → input | 19 ASCII bytes |
 
+A `0x3A` packet only changes the keys it lists: on top of onboard lighting, every other key
+keeps its onboard color (verified on the Apex 7 TKL). A single key cannot be handed back to
+onboard lighting; `0x3B` restores the whole board.
+
 LED codes are HID usage codes, plus `0xF0` for the SteelSeries/Fn key. The Apex 7 TKL does
 not answer the brightness read-back (`0xA3`), so apexide applies brightness in software.
 
