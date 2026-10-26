@@ -533,7 +533,7 @@ pub fn schema() -> Value {
             "text": { "text": "string", "align": "left|center|right" },
             "image": "POST raw PNG/JPEG/BMP/GIF bytes to /v1/oled/image?fit=contain|cover|stretch&dither=true&invert=false&threshold=128",
             "clock": { "format": "%H:%M (strftime)" },
-            "sysinfo": "CPU and RAM bars"
+            "sysinfo": "CPU and RAM bars (default)"
         },
         "endpoints": [
             "GET  /v1/status",

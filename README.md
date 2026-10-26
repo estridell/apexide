@@ -66,7 +66,7 @@ apexide frame                           # colors currently being sent
 apexide oled text "hello world"         # auto-sized, word-wrapped
 apexide oled image cat.gif              # PNG/JPEG/BMP/animated GIF, dithered to 1-bit
 apexide oled clock -f '%H:%M:%S'
-apexide oled sysinfo                    # CPU/RAM bars
+apexide oled sysinfo                    # CPU/RAM bars (default)
 apexide oled notify "Build passed" -d 3000
 apexide oled preview                    # ASCII art of what the screen shows
 apexide oled release                    # clear the screen and stop drawing on it

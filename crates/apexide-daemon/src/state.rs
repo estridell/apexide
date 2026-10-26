@@ -103,7 +103,6 @@ impl Default for Lighting {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OledMode {
     /// apexide clears the OLED once and then stops drawing on it.
-    #[default]
     Release,
     /// Screen off.
     Blank,
@@ -122,7 +121,9 @@ pub enum OledMode {
         #[serde(default = "default_clock")]
         format: String,
     },
-    /// CPU and memory usage bars.
+    /// CPU and memory usage bars. The default, because a mode that keeps
+    /// redrawing also clears the frame the firmware menu leaves behind.
+    #[default]
     Sysinfo,
 }
 
