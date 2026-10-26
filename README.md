@@ -27,8 +27,8 @@ crates/
   the desired state, and the thread renders it at about 30 fps while something animates
   (and only when something is due otherwise), writing only what changed.
   It reconnects on replug and returns the keyboard to onboard lighting when it exits.
-- **Layers.** Base effect, then per-key overrides, then temporary flashes, then global
-  brightness. On the OLED, a temporary notification sits on top of the current mode.
+- **Layers.** Base effect, then per-key overrides, then reactive key presses, then
+  temporary flashes, then global brightness. On the OLED, a temporary notification sits on top of the current mode.
 - **Persistent.** Lighting is saved to `~/.config/apexkb/state.json` and the OLED mode to
   `oled.json` next to it, each whenever it changes.
   Profiles are named snapshots in `~/.config/apexkb/profiles/`.
@@ -86,6 +86,8 @@ apexkb set wasd red esc white          # per-key overrides (selector, color pair
 apexkb clear wasd                      # drop overrides (all if no selector)
 apexkb effect wave --period-ms 2500    # off static breathe spectrum wave gradient twinkle onboard
 apexkb effect gradient --from purple --to cyan -d down
+apexkb reactive keys -c cyan           # keys light up when pressed: off keys ripple
+apexkb reactive ripple --speed 30      # rings spread from each pressed key
 apexkb brightness 60
 apexkb flash fkeys red -d 2000 -b 150  # temporary blinking highlight
 apexkb onboard                         # hand lighting back to the keyboard
@@ -155,6 +157,15 @@ Neither event is reported: interface 4 (vendor page `0xFFC1`, 64-byte input repo
 sends `02 01 <level>` when the roller changes the illumination brightness in the menu. So the
 daemon rewrites the OLED every 250 ms, which clears the menu frame right after it closes
 (verified on the Apex 7 TKL). `release` mode never draws, so the menu frame stays there.
+
+Key presses come from the keyboard's own input interfaces, read in parallel with the
+kernel (hidraw gives every open handle a copy, so typing is unaffected). Interface 0 is a
+boot keyboard (8 bytes: modifier bits, reserved byte, 6 usages) and interface 2 an N-key
+rollover bitmap (32 bytes, one bit per usage `0x00`-`0xFF`); the daemon takes the union of
+both. On the Apex 7 TKL with firmware 4.1.0, presses were seen on interface 0 only. The
+daemon opens these only while a reactive mode is on, keeps presses in memory until their
+highlight fades, and leaves the reactive layer out of `apexkb frame`. Run
+`cargo run -p apexkb-core --example keys` to watch what the keyboard reports.
 
 LED codes are HID usage codes, plus `0xF0` for the SteelSeries/Fn key. The Apex 7 TKL does
 not answer the brightness read-back (`0xA3`), so apexkb applies brightness in software.

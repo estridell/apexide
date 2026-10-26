@@ -5,6 +5,9 @@
 //! unplugged. It ticks at about 30 fps while something animates. Otherwise it
 //! sleeps until the next rewrite, expiry or reconnect is due, or until a
 //! [`Waker`] reports a state change.
+//!
+//! A second thread ([`crate::input`]) reads key presses for the reactive
+//! layer and wakes the render thread when one arrives.
 
 use std::{
     sync::{
@@ -38,36 +41,53 @@ const REFRESH_EVERY: Duration = Duration::from_secs(2);
 /// rewrite is what clears it.
 const OLED_REFRESH_EVERY: Duration = Duration::from_millis(250);
 
-/// Wakes the render thread so it picks up a change to [`Shared`] right away
-/// instead of at its next scheduled tick.
+/// Wakes the render and input threads so they pick up a change to
+/// [`Shared`] right away instead of at their next scheduled tick.
 #[derive(Clone, Debug)]
-pub struct Waker(mpsc::Sender<()>);
+pub struct Waker {
+    render: mpsc::Sender<()>,
+    input: mpsc::Sender<()>,
+}
 
 impl Waker {
     pub fn wake(&self) {
-        self.0.send(()).ok();
+        self.render.send(()).ok();
+        self.input.send(()).ok();
     }
 }
 
 pub struct Engine {
     stop: Arc<AtomicBool>,
     waker: Waker,
-    handle: Option<thread::JoinHandle<()>>,
+    handles: Vec<thread::JoinHandle<()>>,
 }
 
 impl Engine {
     pub fn spawn(shared: Arc<Mutex<Shared>>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
-        let (tx, rx) = mpsc::channel();
-        let handle = thread::Builder::new()
-            .name("apexkb-render".into())
-            .spawn(move || run(shared, flag, rx))
-            .expect("spawn render thread");
+        let (render_tx, render_rx) = mpsc::channel();
+        let (input_tx, input_rx) = mpsc::channel();
+        let render = {
+            let (shared, stop) = (shared.clone(), stop.clone());
+            thread::Builder::new()
+                .name("apexkb-render".into())
+                .spawn(move || run(shared, stop, render_rx))
+                .expect("spawn render thread")
+        };
+        let input = {
+            let (stop, render_tx) = (stop.clone(), render_tx.clone());
+            thread::Builder::new()
+                .name("apexkb-input".into())
+                .spawn(move || crate::input::run(shared, stop, input_rx, render_tx))
+                .expect("spawn input thread")
+        };
         Self {
             stop,
-            waker: Waker(tx),
-            handle: Some(handle),
+            waker: Waker {
+                render: render_tx,
+                input: input_tx,
+            },
+            handles: vec![render, input],
         }
     }
 
@@ -80,7 +100,7 @@ impl Engine {
     pub fn shutdown(mut self) {
         self.stop.store(true, Ordering::SeqCst);
         self.waker.wake();
-        if let Some(h) = self.handle.take() {
+        for h in self.handles.drain(..) {
             h.join().ok();
         }
     }
@@ -142,6 +162,8 @@ fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>, wake: mpsc::Receiver<(
         let (colors, oled, animated, expiry) = {
             let mut s = shared.lock().unwrap();
             s.flashes.retain(|f| f.until > now);
+            let reactive = s.settings.lighting.reactive.clone();
+            s.presses.retain(|p| reactive.lights(p, now));
             if s.notification.as_ref().is_some_and(|n| n.until <= now) {
                 s.notification = None;
             }
@@ -150,18 +172,29 @@ fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>, wake: mpsc::Receiver<(
                 .map(|k| k.model().form)
                 .unwrap_or(apexkb_core::FormFactor::Tkl);
             let keys: Vec<&KeyDef> = form.keys().collect();
-            let colors = effects::render(
-                &s.settings.lighting,
-                &s.flashes,
-                &keys,
-                form.size(),
-                t_ms,
-                now,
-            );
+            let render = |presses| {
+                effects::render(
+                    &s.settings.lighting,
+                    presses,
+                    &s.flashes,
+                    &keys,
+                    form.size(),
+                    t_ms,
+                    now,
+                )
+            };
+            let colors = render(&s.presses);
+            // The API's copy leaves out the reactive layer, so it never
+            // reveals what is being typed.
+            let api_colors = if s.presses.is_empty() {
+                colors.clone()
+            } else {
+                render(&[])
+            };
             let oled_ms = (now - s.oled_since.unwrap_or(epoch)).as_millis() as u64;
             let oled = screen::render(&s.settings.oled, s.notification.as_ref(), &sys, oled_ms);
             showing_sys = s.notification.is_none() && matches!(s.settings.oled, OledMode::Sysinfo);
-            s.frame_lighting = colors.clone();
+            s.frame_lighting = api_colors;
             s.frame_oled = oled.clone();
             (colors, oled, s.animated(), s.next_expiry())
         };

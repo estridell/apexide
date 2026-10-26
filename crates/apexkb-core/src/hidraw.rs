@@ -16,6 +16,9 @@ pub struct HidInfo {
     pub pid: u16,
     /// USB interface number, if the device sits on USB.
     pub interface: Option<u8>,
+    /// sysfs path of the USB device, shared by all interfaces of one
+    /// physical keyboard.
+    pub usb_device: Option<PathBuf>,
     pub name: String,
 }
 
@@ -51,18 +54,25 @@ fn describe(sys: &Path) -> Option<HidInfo> {
         }
     }
     let (vid, pid) = ids?;
-    // .../<usb interface>/<hid device>/hidraw/hidrawN; the interface number
-    // lives on the USB interface directory above the HID device.
-    let interface = fs::canonicalize(&dev)
+    // .../<usb device>/<usb interface>/<hid device>/hidraw/hidrawN; the
+    // interface number lives on the USB interface directory above the HID
+    // device.
+    let usb_interface = fs::canonicalize(&dev)
         .ok()
-        .and_then(|p| p.parent().map(|p| p.join("bInterfaceNumber")))
-        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let interface = usb_interface
+        .as_ref()
+        .and_then(|p| fs::read_to_string(p.join("bInterfaceNumber")).ok())
         .and_then(|s| u8::from_str_radix(s.trim(), 16).ok());
+    let usb_device = interface
+        .and(usb_interface)
+        .and_then(|p| p.parent().map(Path::to_path_buf));
     Some(HidInfo {
         path: Path::new("/dev").join(sys.file_name()?),
         vid,
         pid,
         interface,
+        usb_device,
         name,
     })
 }

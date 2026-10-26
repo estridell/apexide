@@ -24,7 +24,10 @@ use serde_json::{Value, json};
 
 use crate::{
     engine::Waker,
-    state::{Effect, Flash, Lighting, MAX_FLASHES, Notification, OledMode, Shared, default_clock},
+    state::{
+        Effect, Flash, Lighting, MAX_FLASHES, Notification, OledMode, Reactive, Shared,
+        default_clock,
+    },
     store::{Store, StoreError},
 };
 
@@ -176,6 +179,7 @@ pub fn router(app: App) -> Router {
         .route("/v1/schema", get(schema_handler))
         .route("/v1/lighting", get(get_lighting).put(put_lighting))
         .route("/v1/lighting/effect", post(set_effect))
+        .route("/v1/lighting/reactive", post(set_reactive))
         .route("/v1/lighting/fill", post(fill))
         .route("/v1/lighting/keys", post(set_keys))
         .route("/v1/lighting/keys/clear", post(clear_keys))
@@ -258,6 +262,15 @@ async fn put_lighting(st: St, J(l): J<crate::state::Lighting>) -> Res {
 
 async fn set_effect(st: St, J(effect): J<Effect>) -> Res {
     st.lighting_reply(|l| l.effect = effect).await
+}
+
+async fn set_reactive(st: St, J(reactive): J<Reactive>) -> Res {
+    if let Reactive::Ripple { speed, width, .. } = reactive
+        && !(speed > 0.0 && width > 0.0)
+    {
+        return Err(ApiError::bad("ripple speed and width must be above 0"));
+    }
+    st.lighting_reply(|l| l.reactive = reactive).await
 }
 
 #[derive(Deserialize)]
@@ -352,6 +365,8 @@ async fn flash(st: St, J(r): J<FlashReq>) -> Res {
     Ok(Json(json!({ "ok": true, "duration_ms": r.duration_ms })))
 }
 
+/// The reactive layer is left out of the frame, so the API never reveals
+/// what is being typed.
 async fn lighting_frame(st: St) -> Res {
     use crate::effects::LightingFrame;
     let s = st.shared.lock().unwrap();
@@ -566,6 +581,11 @@ pub fn schema() -> Value {
             "twinkle": { "color": "color", "background": "#000000", "period_ms": 3000 },
             "onboard": {}
         },
+        "reactive": {
+            "off": "key presses are not read",
+            "keys": { "color": "#ffffff", "fade_ms": 500 },
+            "ripple": { "color": "#ffffff", "fade_ms": 1000, "speed": 20.0, "width": 1.5 }
+        },
         "oled_modes": {
             "release": "apexkb clears the OLED once and stops drawing on it",
             "blank": "screen off",
@@ -577,8 +597,9 @@ pub fn schema() -> Value {
         "endpoints": [
             "GET  /v1/status",
             "GET  /v1/keys[?form=tkl|full]",
-            "GET  /v1/lighting | PUT /v1/lighting {effect, keys, brightness}",
+            "GET  /v1/lighting | PUT /v1/lighting {effect, keys, reactive, brightness}",
             "POST /v1/lighting/effect {type, ...params}",
+            "POST /v1/lighting/reactive {type, ...params}",
             "POST /v1/lighting/fill {color}",
             "POST /v1/lighting/keys {keys: {selector: color}}",
             "POST /v1/lighting/keys/clear {keys?: selector}",

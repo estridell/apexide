@@ -4,10 +4,12 @@
 //! - [`protocol`] holds the pure packet encoders.
 //! - [`keys`] maps key names to LED codes and physical positions.
 //! - [`oled`] renders text and images into 128x40 OLED frames.
+//! - [`input`] reads key presses for reactive lighting.
 
 pub mod color;
 pub mod device;
 pub mod hidraw;
+pub mod input;
 pub mod keys;
 pub mod model;
 pub mod oled;
