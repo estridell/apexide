@@ -19,10 +19,12 @@ CONCEPTS
     1. effect      whole-board animation (`effect`), or `onboard` to let the
                    keyboard's own profile drive the LEDs
     2. overrides   fixed per-key colors (`set`, `clear`)
-    3. flashes     temporary highlights that expire on their own (`flash`)
-    4. brightness  global 0-100 scale (`brightness`)
-  On top of the onboard effect, overrides and flashes light only their own
-  keys and the rest of the board keeps its onboard lighting.
+    3. reactive    keys that light up when pressed, or ripples (`reactive`)
+    4. flashes     temporary highlights that expire on their own (`flash`)
+    5. brightness  global 0-100 scale (`brightness`)
+  On top of the onboard effect, overrides, reactive highlights and flashes
+  light only their own keys and the rest of the board keeps its onboard
+  lighting.
 
   The OLED (128x40, monochrome) shows one mode at a time: text, image, clock,
   sysinfo (default), blank or release. `oled notify` shows a message over it for a while.
@@ -61,6 +63,7 @@ UPDATES
 EXAMPLES
   apexkb effect wave --period-ms 2500
   apexkb set wasd red esc white
+  apexkb reactive ripple -c cyan
   apexkb flash fkeys red -d 2000 -b 150
   apexkb oled text \"build passed\"
   apexkb profile save gaming
@@ -215,6 +218,43 @@ enum Cmd {
         /// Direction of travel (wave, gradient).
         #[arg(long, short, value_enum)]
         direction: Option<Dir>,
+    },
+    /// Light keys up when they are pressed.
+    ///
+    /// A layer above the effect and the overrides, so it combines with any
+    /// effect. Options that do not apply to the chosen mode are ignored.
+    ///   off      stop reading key presses (default)
+    ///   keys     a pressed key shows --color while held, then fades out
+    ///            over --fade-ms [500]
+    ///   ripple   a ring of --color spreads from each pressed key at --speed
+    ///            [20] key units per second, --width [1.5] keys thick, and
+    ///            fades out over --fade-ms [1000]
+    /// --color defaults to white.
+    ///
+    /// The daemon reads presses from the keyboard's own HID interfaces, only
+    /// while a mode other than off is set. Typing works as usual. Presses are
+    /// kept in memory only until their highlight fades, are never logged or
+    /// saved, and `frame` leaves the reactive layer out.
+    #[command(
+        verbatim_doc_comment,
+        about = "Light keys up when they are pressed",
+        after_long_help = "EXAMPLES\n  apexkb reactive keys\n  apexkb reactive keys -c cyan --fade-ms 1000\n  apexkb reactive ripple -c orange --speed 30\n  apexkb effect off && apexkb reactive ripple   # ripples on a dark board\n  apexkb reactive off"
+    )]
+    Reactive {
+        #[arg(value_enum)]
+        mode: ReactiveName,
+        /// Highlight color.
+        #[arg(long, short)]
+        color: Option<String>,
+        /// How long a highlight takes to fade out.
+        #[arg(long, short, value_name = "MS")]
+        fade_ms: Option<u32>,
+        /// How fast a ripple spreads, in key units per second.
+        #[arg(long, value_name = "KEYS")]
+        speed: Option<f32>,
+        /// Thickness of a ripple ring, in key units.
+        #[arg(long, value_name = "KEYS")]
+        width: Option<f32>,
     },
     /// Set global lighting brightness, 0-100.
     ///
@@ -375,6 +415,13 @@ enum EffectName {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
+enum ReactiveName {
+    Off,
+    Keys,
+    Ripple,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
 enum Dir {
     Right,
     Left,
@@ -522,6 +569,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             put("direction", direction.map(|d| Value::from(value_name(d))));
             (c.post("/v1/lighting/effect", e)?, fmt_lighting)
         }
+        Cmd::Reactive { mode, color, fade_ms, speed, width } => {
+            let mut r = json!({ "type": value_name(mode) });
+            let o = r.as_object_mut().unwrap();
+            let mut put = |k: &str, v: Option<Value>| {
+                if let Some(v) = v {
+                    o.insert(k.into(), v);
+                }
+            };
+            put("color", color.map(Value::from));
+            put("fade_ms", fade_ms.map(Value::from));
+            put("speed", speed.map(Value::from));
+            put("width", width.map(Value::from));
+            (c.post("/v1/lighting/reactive", r)?, fmt_lighting)
+        }
         Cmd::Brightness { percent } => {
             (c.put("/v1/lighting/brightness", json!({ "brightness": percent }))?, fmt_lighting)
         }
@@ -629,8 +690,9 @@ fn describe_effect(e: &Value) -> String {
 fn fmt_lighting(l: &Value) -> String {
     let overrides = l["keys"].as_object().map(|m| m.len()).unwrap_or(0);
     format!(
-        "effect: {}\nkey overrides: {overrides}\nbrightness: {}%",
+        "effect: {}\nkey overrides: {overrides}\nreactive: {}\nbrightness: {}%",
         describe_effect(&l["effect"]),
+        describe_effect(&l["reactive"]),
         l["brightness"]
     )
 }

@@ -5,6 +5,9 @@
 //! unplugged. It ticks at about 30 fps while something animates. Otherwise it
 //! sleeps until the next rewrite, expiry or reconnect is due, or until a
 //! [`Waker`] reports a state change.
+//!
+//! A second thread ([`crate::input`]) reads key presses for the reactive
+//! layer and wakes the render thread when one arrives.
 
 use std::{
     sync::{
@@ -16,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use apexkb_core::{Frame, Keyboard, keys::KeyDef};
+use apexkb_core::{Frame, KeyCode, Keyboard, Rgb, keys::KeyDef};
 
 use crate::{
     effects::{self, LightingFrame},
@@ -37,37 +40,58 @@ const REFRESH_EVERY: Duration = Duration::from_secs(2);
 /// frame behind when it closes, without reporting either event, so the next
 /// rewrite is what clears it.
 const OLED_REFRESH_EVERY: Duration = Duration::from_millis(250);
+/// Shortest time between whole-board restores that hand keys which left an
+/// overlay back to onboard lighting. A ripple changes the overlay's keys
+/// every tick, and restoring that often makes the board flicker.
+const RESTORE_EVERY: Duration = Duration::from_millis(250);
 
-/// Wakes the render thread so it picks up a change to [`Shared`] right away
-/// instead of at its next scheduled tick.
+/// Wakes the render and input threads so they pick up a change to
+/// [`Shared`] right away instead of at their next scheduled tick.
 #[derive(Clone, Debug)]
-pub struct Waker(mpsc::Sender<()>);
+pub struct Waker {
+    render: mpsc::Sender<()>,
+    input: mpsc::Sender<()>,
+}
 
 impl Waker {
     pub fn wake(&self) {
-        self.0.send(()).ok();
+        self.render.send(()).ok();
+        self.input.send(()).ok();
     }
 }
 
 pub struct Engine {
     stop: Arc<AtomicBool>,
     waker: Waker,
-    handle: Option<thread::JoinHandle<()>>,
+    handles: Vec<thread::JoinHandle<()>>,
 }
 
 impl Engine {
     pub fn spawn(shared: Arc<Mutex<Shared>>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
-        let (tx, rx) = mpsc::channel();
-        let handle = thread::Builder::new()
-            .name("apexkb-render".into())
-            .spawn(move || run(shared, flag, rx))
-            .expect("spawn render thread");
+        let (render_tx, render_rx) = mpsc::channel();
+        let (input_tx, input_rx) = mpsc::channel();
+        let render = {
+            let (shared, stop, input_tx) = (shared.clone(), stop.clone(), input_tx.clone());
+            thread::Builder::new()
+                .name("apexkb-render".into())
+                .spawn(move || run(shared, stop, render_rx, input_tx))
+                .expect("spawn render thread")
+        };
+        let input = {
+            let (stop, render_tx) = (stop.clone(), render_tx.clone());
+            thread::Builder::new()
+                .name("apexkb-input".into())
+                .spawn(move || crate::input::run(shared, stop, input_rx, render_tx))
+                .expect("spawn input thread")
+        };
         Self {
             stop,
-            waker: Waker(tx),
-            handle: Some(handle),
+            waker: Waker {
+                render: render_tx,
+                input: input_tx,
+            },
+            handles: vec![render, input],
         }
     }
 
@@ -80,7 +104,7 @@ impl Engine {
     pub fn shutdown(mut self) {
         self.stop.store(true, Ordering::SeqCst);
         self.waker.wake();
-        if let Some(h) = self.handle.take() {
+        for h in self.handles.drain(..) {
             h.join().ok();
         }
     }
@@ -94,9 +118,20 @@ struct Output {
     oled: Option<Frame>,
     written: Option<Instant>,
     oled_written: Option<Instant>,
+    /// When the board was last restored to onboard lighting under an overlay.
+    restored: Option<Instant>,
+    /// The overlay holds keys at black until the next restore is allowed.
+    restore_pending: bool,
 }
 
-fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>, wake: mpsc::Receiver<()>) {
+/// `input` wakes the input thread, which waits for a keyboard to connect
+/// before it reads key presses.
+fn run(
+    shared: Arc<Mutex<Shared>>,
+    stop: Arc<AtomicBool>,
+    wake: mpsc::Receiver<()>,
+    input: mpsc::Sender<()>,
+) {
     let epoch = Instant::now();
     let mut kb: Option<Keyboard> = None;
     let mut last_attempt: Option<Instant> = None;
@@ -119,6 +154,7 @@ fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>, wake: mpsc::Receiver<(
                     s.last_error = None;
                     out = Output::default();
                     kb = Some(k);
+                    input.send(()).ok();
                 }
                 Err(e) => {
                     let msg = e.to_string();
@@ -142,6 +178,8 @@ fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>, wake: mpsc::Receiver<(
         let (colors, oled, animated, expiry) = {
             let mut s = shared.lock().unwrap();
             s.flashes.retain(|f| f.until > now);
+            let reactive = s.settings.lighting.reactive.clone();
+            s.presses.retain(|p| reactive.lights(p, now));
             if s.notification.as_ref().is_some_and(|n| n.until <= now) {
                 s.notification = None;
             }
@@ -150,18 +188,29 @@ fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>, wake: mpsc::Receiver<(
                 .map(|k| k.model().form)
                 .unwrap_or(apexkb_core::FormFactor::Tkl);
             let keys: Vec<&KeyDef> = form.keys().collect();
-            let colors = effects::render(
-                &s.settings.lighting,
-                &s.flashes,
-                &keys,
-                form.size(),
-                t_ms,
-                now,
-            );
+            let render = |presses| {
+                effects::render(
+                    &s.settings.lighting,
+                    presses,
+                    &s.flashes,
+                    &keys,
+                    form.size(),
+                    t_ms,
+                    now,
+                )
+            };
+            let colors = render(&s.presses);
+            // The API's copy leaves out the reactive layer, so it never
+            // reveals what is being typed.
+            let api_colors = if s.presses.is_empty() {
+                colors.clone()
+            } else {
+                render(&[])
+            };
             let oled_ms = (now - s.oled_since.unwrap_or(epoch)).as_millis() as u64;
             let oled = screen::render(&s.settings.oled, s.notification.as_ref(), &sys, oled_ms);
             showing_sys = s.notification.is_none() && matches!(s.settings.oled, OledMode::Sysinfo);
-            s.frame_lighting = colors.clone();
+            s.frame_lighting = api_colors;
             s.frame_oled = oled.clone();
             (colors, oled, s.animated(), s.next_expiry())
         };
@@ -174,6 +223,7 @@ fn run(shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>, wake: mpsc::Receiver<(
             s.device = None;
             s.last_error = Some(e.to_string());
             kb = None;
+            input.send(()).ok();
         }
 
         // Sleep until the next thing is due, or an API call changes the
@@ -236,10 +286,53 @@ fn next_due(
         ) {
             at(out.written.map(|t| t + REFRESH_EVERY));
         }
+        if out.restore_pending {
+            at(out.restored.map(|t| t + RESTORE_EVERY));
+        }
     } else {
         at(last_attempt.map(|t| t + RECONNECT_EVERY));
     }
     due
+}
+
+/// Whether an overlay needs the whole board restored to onboard lighting
+/// first.
+#[derive(Debug, PartialEq)]
+enum Restore {
+    No,
+    Now,
+    /// Keys left the overlay but a restore ran too recently; they were
+    /// added back at black.
+    Later,
+}
+
+/// A key can only be handed back to onboard lighting by restoring the whole
+/// board, which is needed whenever a key set earlier is no longer part of
+/// the overlay. Unless `can_restore`, such keys are held at black in
+/// `colors` instead, until a later tick may restore.
+fn plan_overlay(
+    prev: Option<&LightingFrame>,
+    colors: &mut Vec<(KeyCode, Rgb)>,
+    can_restore: bool,
+) -> Restore {
+    let p = match prev {
+        None | Some(LightingFrame::Full(_)) => return Restore::Now,
+        Some(LightingFrame::Onboard) => return Restore::No,
+        Some(LightingFrame::Overlay(p)) => p,
+    };
+    let dropped: Vec<_> = p
+        .iter()
+        .filter(|(k, _)| !colors.iter().any(|(n, _)| n == k))
+        .map(|(k, _)| (*k, Rgb::BLACK))
+        .collect();
+    if dropped.is_empty() {
+        Restore::No
+    } else if can_restore {
+        Restore::Now
+    } else {
+        colors.extend(dropped);
+        Restore::Later
+    }
 }
 
 fn write(
@@ -250,6 +343,17 @@ fn write(
 ) -> apexkb_core::device::Result<()> {
     let refresh = out.written.is_none_or(|t| t.elapsed() >= REFRESH_EVERY);
     let prev = out.lighting.take();
+    let mut lighting = lighting;
+    let mut restore = false;
+    out.restore_pending = false;
+    if let LightingFrame::Overlay(c) = &mut lighting {
+        let can_restore = out.restored.is_none_or(|t| t.elapsed() >= RESTORE_EVERY);
+        match plan_overlay(prev.as_ref(), c, can_restore) {
+            Restore::No => {}
+            Restore::Now => restore = true,
+            Restore::Later => out.restore_pending = true,
+        }
+    }
     let changed = prev.as_ref() != Some(&lighting);
     match &lighting {
         LightingFrame::Onboard => {
@@ -264,18 +368,9 @@ fn write(
         }
         LightingFrame::Overlay(c) => {
             if changed || refresh {
-                // A key can only be handed back to onboard lighting by
-                // restoring the whole board, so do that whenever a key we set
-                // earlier is no longer part of the overlay.
-                let restore = match &prev {
-                    None | Some(LightingFrame::Full(_)) => true,
-                    Some(LightingFrame::Onboard) => false,
-                    Some(LightingFrame::Overlay(p)) => {
-                        p.iter().any(|(k, _)| !c.iter().any(|(n, _)| n == k))
-                    }
-                };
                 if restore {
                     kb.onboard_lighting()?;
+                    out.restored = Some(Instant::now());
                 }
                 kb.set_colors(c)?;
             }
@@ -306,4 +401,36 @@ fn write(
         out.written = Some(Instant::now());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_restores_are_throttled() {
+        let (a, b) = (KeyCode(0x04), KeyCode(0x05));
+        let red = Rgb::new(255, 0, 0);
+        let prev = LightingFrame::Overlay(vec![(a, red), (b, red)]);
+
+        // Same keys: nothing to hand back.
+        let mut c = vec![(a, red), (b, red)];
+        assert_eq!(plan_overlay(Some(&prev), &mut c, false), Restore::No);
+
+        // `b` left the overlay and a restore is allowed.
+        let mut c = vec![(a, red)];
+        assert_eq!(plan_overlay(Some(&prev), &mut c, true), Restore::Now);
+        assert_eq!(c, vec![(a, red)]);
+
+        // Not yet allowed: `b` is held at black.
+        let mut c = vec![(a, red)];
+        assert_eq!(plan_overlay(Some(&prev), &mut c, false), Restore::Later);
+        assert_eq!(c, vec![(a, red), (b, Rgb::BLACK)]);
+
+        // Coming from onboard or from software lighting.
+        let mut c = vec![(a, red)];
+        let onboard = LightingFrame::Onboard;
+        assert_eq!(plan_overlay(Some(&onboard), &mut c, false), Restore::No);
+        assert_eq!(plan_overlay(None, &mut c, false), Restore::Now);
+    }
 }

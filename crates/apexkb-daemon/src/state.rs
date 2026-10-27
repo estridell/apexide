@@ -80,6 +80,70 @@ fn default_wavelength() -> f32 {
     18.0
 }
 
+/// Lighting that responds to key presses, drawn over the effect and the
+/// per-key overrides.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Reactive {
+    /// Key presses are not read.
+    #[default]
+    Off,
+    /// A pressed key lights up while held, then fades out.
+    Keys {
+        #[serde(default = "default_reactive_color")]
+        color: Rgb,
+        #[serde(default = "default_fade")]
+        fade_ms: u32,
+    },
+    /// A ring spreads out from each pressed key and fades as it goes.
+    Ripple {
+        #[serde(default = "default_reactive_color")]
+        color: Rgb,
+        #[serde(default = "default_ripple_fade")]
+        fade_ms: u32,
+        /// How fast the ring grows, in key units per second.
+        #[serde(default = "default_ripple_speed")]
+        speed: f32,
+        /// Thickness of the ring, in key units.
+        #[serde(default = "default_ripple_width")]
+        width: f32,
+    },
+}
+
+impl Reactive {
+    pub fn is_on(&self) -> bool {
+        *self != Reactive::Off
+    }
+
+    /// Whether `press` still lights anything at `now`.
+    pub fn lights(&self, press: &Press, now: Instant) -> bool {
+        let gone = |since: Instant, fade_ms: u32| {
+            now.saturating_duration_since(since).as_millis() >= fade_ms as u128
+        };
+        match self {
+            Reactive::Off => false,
+            Reactive::Keys { fade_ms, .. } => press.released.is_none_or(|r| !gone(r, *fade_ms)),
+            Reactive::Ripple { fade_ms, .. } => !gone(press.at, *fade_ms),
+        }
+    }
+}
+
+fn default_reactive_color() -> Rgb {
+    Rgb::new(255, 255, 255)
+}
+fn default_fade() -> u32 {
+    500
+}
+fn default_ripple_fade() -> u32 {
+    1000
+}
+fn default_ripple_speed() -> f32 {
+    20.0
+}
+fn default_ripple_width() -> f32 {
+    1.5
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
@@ -97,6 +161,8 @@ pub struct Lighting {
     pub effect: Effect,
     /// Per-key colors painted over the effect.
     pub keys: BTreeMap<KeyCode, Rgb>,
+    /// Response to key presses, painted over the overrides.
+    pub reactive: Reactive,
     /// Global brightness, 0-100. Applied in software.
     pub brightness: u8,
 }
@@ -106,6 +172,7 @@ impl Default for Lighting {
         Self {
             effect: Effect::Onboard,
             keys: BTreeMap::new(),
+            reactive: Reactive::Off,
             brightness: 100,
         }
     }
@@ -187,6 +254,20 @@ pub struct Flash {
     pub blink_ms: Option<u32>,
 }
 
+/// Most key presses remembered at once. A new one beyond this drops the
+/// oldest.
+pub const MAX_PRESSES: usize = 128;
+
+/// A key press that the reactive layer is still drawing. Kept in memory
+/// only, and only while it still lights something.
+#[derive(Clone, Debug)]
+pub struct Press {
+    pub key: KeyCode,
+    pub at: Instant,
+    /// `None` while the key is held.
+    pub released: Option<Instant>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Notification {
     pub text: String,
@@ -198,11 +279,15 @@ pub struct Notification {
 pub struct Shared {
     pub settings: Settings,
     pub flashes: Vec<Flash>,
+    /// Recent key presses, oldest first, for the reactive layer. Never
+    /// logged, saved or served by the API.
+    pub presses: Vec<Press>,
     pub notification: Option<Notification>,
     /// Set by the render thread.
     pub device: Option<DeviceInfo>,
     pub last_error: Option<String>,
-    /// Last lighting and OLED frame computed by the render thread.
+    /// Last lighting and OLED frame computed by the render thread. The
+    /// lighting leaves out the reactive layer.
     pub frame_lighting: crate::effects::LightingFrame,
     pub frame_oled: Option<apexkb_core::Frame>,
     /// When the OLED mode last changed; animations play from here.
@@ -214,7 +299,41 @@ impl Shared {
     pub fn animated(&self) -> bool {
         self.settings.lighting.effect.is_animated()
             || self.flashes.iter().any(|f| f.blink_ms.is_some())
+            || !self.presses.is_empty()
             || (self.notification.is_none() && self.settings.oled.is_animated())
+    }
+
+    /// Record a key press for the reactive layer.
+    pub fn press(&mut self, key: KeyCode, at: Instant) {
+        if self.presses.len() >= MAX_PRESSES {
+            let excess = self.presses.len() + 1 - MAX_PRESSES;
+            self.presses.drain(..excess);
+        }
+        self.presses.push(Press {
+            key,
+            at,
+            released: None,
+        });
+    }
+
+    /// Record a key release, which starts the fade of its latest press.
+    pub fn release(&mut self, key: KeyCode, at: Instant) {
+        if let Some(p) = self
+            .presses
+            .iter_mut()
+            .rev()
+            .find(|p| p.key == key && p.released.is_none())
+        {
+            p.released = Some(at);
+        }
+    }
+
+    /// Treat every held key as released, for when input stops being read
+    /// and no release would arrive.
+    pub fn release_all(&mut self, at: Instant) {
+        for p in &mut self.presses {
+            p.released.get_or_insert(at);
+        }
     }
 
     /// When the next flash or notification runs out.

@@ -4,7 +4,7 @@ use std::f32::consts::TAU;
 
 use apexkb_core::{KeyCode, Rgb, keys::KeyDef};
 
-use crate::state::{Direction, Effect, Flash, Lighting};
+use crate::state::{Direction, Effect, Flash, Lighting, Press, Reactive};
 
 /// Normalised position of a key along `dir`, in key units from the start edge.
 fn along(key: &KeyDef, dir: Direction, size: (f32, f32)) -> f32 {
@@ -78,6 +78,61 @@ pub fn effect_color(effect: &Effect, key: &KeyDef, size: (f32, f32), t_ms: u64) 
     })
 }
 
+/// How strongly the reactive layer covers each key code this tick, from 0
+/// (not at all) to 1 (the reactive color only). `None` when nothing is lit.
+fn reactive_levels(
+    reactive: &Reactive,
+    presses: &[Press],
+    keys: &[&KeyDef],
+    now: std::time::Instant,
+) -> Option<[f32; 256]> {
+    if presses.is_empty() {
+        return None;
+    }
+    let ms_since = |t| now.saturating_duration_since(t).as_secs_f32() * 1000.0;
+    let mut levels = [0.0f32; 256];
+    match reactive {
+        Reactive::Off => return None,
+        Reactive::Keys { fade_ms, .. } => {
+            for p in presses {
+                let level = match p.released {
+                    None => 1.0,
+                    Some(r) => 1.0 - ms_since(r) / (*fade_ms).max(1) as f32,
+                };
+                let l = &mut levels[p.key.0 as usize];
+                *l = l.max(level);
+            }
+        }
+        Reactive::Ripple {
+            fade_ms,
+            speed,
+            width,
+            ..
+        } => {
+            for p in presses {
+                let Some(origin) = keys.iter().find(|k| k.code == p.key) else {
+                    continue;
+                };
+                let (ox, oy) = origin.center();
+                let age = ms_since(p.at);
+                let fade = 1.0 - age / (*fade_ms).max(1) as f32;
+                if fade <= 0.0 {
+                    continue;
+                }
+                let radius = speed * age / 1000.0;
+                for key in keys {
+                    let (x, y) = key.center();
+                    let off = ((x - ox).hypot(y - oy) - radius).abs();
+                    let level = (1.0 - off / width.max(0.1)) * fade;
+                    let l = &mut levels[key.code.0 as usize];
+                    *l = l.max(level);
+                }
+            }
+        }
+    }
+    Some(levels)
+}
+
 /// What the render thread should send for lighting this tick.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum LightingFrame {
@@ -108,14 +163,17 @@ enum FlashHit {
     Off,
 }
 
-/// Final colors with overrides, flashes and brightness applied.
+/// Final colors with overrides, reactive presses, flashes and brightness
+/// applied.
 ///
-/// With the onboard effect, only keys that have an override or an active
-/// flash are emitted, so the rest of the board keeps its onboard lighting. A
-/// blinking flash's off phase then shows the key's override, or black, since
-/// the keyboard cannot hand a single key back to its onboard lighting.
+/// With the onboard effect, only keys that have an override, a reactive
+/// highlight or an active flash are emitted, so the rest of the board keeps
+/// its onboard lighting. A blinking flash's off phase then shows the key's
+/// override, or black, since the keyboard cannot hand a single key back to
+/// its onboard lighting. Reactive highlights fade from black there too.
 pub fn render(
     lighting: &Lighting,
+    presses: &[Press],
     flashes: &[Flash],
     keys: &[&KeyDef],
     size: (f32, f32),
@@ -141,12 +199,23 @@ pub fn render(
             }
         }
     }
+    let reactive = reactive_levels(&lighting.reactive, presses, keys, now);
+    let reactive_color = match lighting.reactive {
+        Reactive::Keys { color, .. } | Reactive::Ripple { color, .. } => color,
+        Reactive::Off => Rgb::BLACK,
+    };
     let colors: Vec<_> = keys
         .iter()
         .filter_map(|key| {
             let mut c = effect_color(&lighting.effect, key, size, t_ms);
             if let Some(o) = lighting.keys.get(&key.code) {
                 c = Some(*o);
+            }
+            if let Some(levels) = &reactive {
+                let level = levels[key.code.0 as usize];
+                if level > 0.0 {
+                    c = Some(c.unwrap_or(Rgb::BLACK).lerp(reactive_color, level));
+                }
             }
             match hits[key.code.0 as usize] {
                 Some(FlashHit::On(f)) => c = Some(f),
@@ -178,7 +247,15 @@ mod tests {
     #[test]
     fn onboard_renders_nothing() {
         let l = Lighting::default();
-        let frame = render(&l, &[], &tkl(), FormFactor::Tkl.size(), 0, Instant::now());
+        let frame = render(
+            &l,
+            &[],
+            &[],
+            &tkl(),
+            FormFactor::Tkl.size(),
+            0,
+            Instant::now(),
+        );
         assert_eq!(frame, LightingFrame::Onboard);
     }
 
@@ -200,6 +277,7 @@ mod tests {
             let now = start + Duration::from_millis(ms);
             render(
                 &l,
+                &[],
                 std::slice::from_ref(&flash),
                 &tkl(),
                 (18.0, 6.0),
@@ -229,7 +307,15 @@ mod tests {
         let esc = keys::find("esc").unwrap().code;
         l.keys.insert(esc, Rgb::new(200, 0, 0));
         l.brightness = 50;
-        let frame = render(&l, &[], &tkl(), FormFactor::Tkl.size(), 0, Instant::now());
+        let frame = render(
+            &l,
+            &[],
+            &[],
+            &tkl(),
+            FormFactor::Tkl.size(),
+            0,
+            Instant::now(),
+        );
         assert!(matches!(frame, LightingFrame::Full(_)));
         let get = |k| frame.colors().iter().find(|(c, _)| *c == k).unwrap().1;
         assert_eq!(get(esc), Rgb::new(100, 0, 0));
@@ -254,6 +340,7 @@ mod tests {
         let at = |ms| {
             let frame = render(
                 &l,
+                &[],
                 std::slice::from_ref(&flash),
                 &tkl(),
                 (18.0, 6.0),
@@ -288,6 +375,7 @@ mod tests {
         let at = |flashes: &[Flash], ms| {
             let frame = render(
                 &l,
+                &[],
                 flashes,
                 &tkl(),
                 (18.0, 6.0),
@@ -303,6 +391,107 @@ mod tests {
         assert_eq!(at(&both, 150), red);
         // With nothing lit underneath, the effect color shows.
         assert_eq!(at(&both[1..], 150), Rgb::new(0, 0, 255));
+    }
+
+    #[test]
+    fn reactive_keys_hold_then_fade() {
+        let white = Rgb::new(255, 255, 255);
+        let l = Lighting {
+            effect: Effect::Static { color: Rgb::BLACK },
+            reactive: Reactive::Keys {
+                color: white,
+                fade_ms: 100,
+            },
+            ..Default::default()
+        };
+        let a = keys::find("a").unwrap().code;
+        let start = Instant::now();
+        let ms = |n| start + Duration::from_millis(n);
+        let mut press = Press {
+            key: a,
+            at: start,
+            released: None,
+        };
+        let at = |p: &Press, now| {
+            let frame = render(
+                &l,
+                std::slice::from_ref(p),
+                &[],
+                &tkl(),
+                (18.0, 6.0),
+                0,
+                now,
+            );
+            frame.colors().iter().find(|(c, _)| *c == a).unwrap().1
+        };
+        assert_eq!(at(&press, ms(500)), white);
+        press.released = Some(ms(500));
+        assert_eq!(at(&press, ms(550)), Rgb::new(128, 128, 128));
+        assert_eq!(at(&press, ms(600)), Rgb::BLACK);
+        assert!(l.reactive.lights(&press, ms(550)));
+        assert!(!l.reactive.lights(&press, ms(600)));
+    }
+
+    #[test]
+    fn reactive_on_onboard_lights_only_pressed_keys() {
+        let red = Rgb::new(255, 0, 0);
+        let l = Lighting {
+            reactive: Reactive::Keys {
+                color: red,
+                fade_ms: 100,
+            },
+            ..Default::default()
+        };
+        let a = keys::find("a").unwrap().code;
+        let now = Instant::now();
+        let press = Press {
+            key: a,
+            at: now,
+            released: None,
+        };
+        let frame = render(&l, &[press], &[], &tkl(), (18.0, 6.0), 0, now);
+        assert_eq!(frame, LightingFrame::Overlay(vec![(a, red)]));
+    }
+
+    #[test]
+    fn ripple_spreads_out() {
+        let l = Lighting {
+            effect: Effect::Off,
+            reactive: Reactive::Ripple {
+                color: Rgb::new(255, 255, 255),
+                fade_ms: 1000,
+                speed: 10.0,
+                width: 1.0,
+            },
+            ..Default::default()
+        };
+        let g = keys::find("g").unwrap().code;
+        let k = keys::find("k").unwrap().code; // 3 keys right of g
+        let start = Instant::now();
+        let press = Press {
+            key: g,
+            at: start,
+            released: None,
+        };
+        let at = |ms, key| {
+            let now = start + Duration::from_millis(ms);
+            let frame = render(
+                &l,
+                std::slice::from_ref(&press),
+                &[],
+                &tkl(),
+                (18.0, 6.0),
+                0,
+                now,
+            );
+            frame.colors().iter().find(|(c, _)| *c == key).unwrap().1.r
+        };
+        assert!(at(0, g) > 250);
+        assert_eq!(at(0, k), 0);
+        // At 300 ms the ring has travelled 3 keys: it is on k and has left g.
+        assert!(at(300, k) > 150);
+        assert_eq!(at(300, g), 0);
+        assert_eq!(at(1000, k), 0);
     }
 
     #[test]
