@@ -22,7 +22,10 @@ use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::api::{ApiError, App, J};
+use crate::{
+    api::{ApiError, App, J},
+    store::Store,
+};
 
 type Res = Result<Json<Value>, ApiError>;
 type St = axum::extract::State<App>;
@@ -125,33 +128,60 @@ async fn edit_slot(
         let mut after = before.clone();
         let change = edit(&mut after)?;
         let changed = after != before;
-        let written = write && changed;
-        let mut backup = None;
-        if written {
-            let path = store.backup_onboard(slot, before.bytes())?;
-            backup = Some(path.display().to_string());
-            kb.write_profile(index, &after)?;
-            let back = kb.read_profile(index)?;
-            if back != after {
-                return Err(ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("slot {slot} read back different from what was written"),
-                ));
-            }
-            tracing::info!(slot, change, "wrote onboard profile");
-        }
-        Ok(Json(json!({
-            "slot": slot,
-            "change": change,
-            "changed": changed,
-            "written": written,
-            "selected": written,
-            "backup": backup,
-            "before": before.summary(),
-            "after": after.summary(),
-        })))
+        store_slot(
+            kb,
+            &store,
+            slot,
+            before.bytes(),
+            &after,
+            write && changed,
+            change,
+        )
+        .map(|mut reply| {
+            reply["changed"] = json!(changed);
+            reply["before"] = json!(before.summary());
+            reply
+        })
+        .map(Json)
     })
     .await
+}
+
+/// If `write`, save `old` (the slot's bytes before the write), write
+/// `after` to `slot`, and check it reads back the same. Returns the reply
+/// fields the edits share.
+fn store_slot(
+    kb: &mut Keyboard,
+    store: &Store,
+    slot: u8,
+    old: &[u8],
+    after: &Profile,
+    write: bool,
+    change: String,
+) -> Result<Value, ApiError> {
+    let index = slot - 1;
+    let mut backup = None;
+    if write {
+        let path = store.backup_onboard(slot, old)?;
+        backup = Some(path.display().to_string());
+        kb.write_profile(index, after)?;
+        let back = kb.read_profile(index)?;
+        if &back != after {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("slot {slot} read back different from what was written"),
+            ));
+        }
+        tracing::info!(slot, change, "wrote onboard profile");
+    }
+    Ok(json!({
+        "slot": slot,
+        "change": change,
+        "written": write,
+        "selected": write,
+        "backup": backup,
+        "after": after.summary(),
+    }))
 }
 
 async fn list(st: St) -> Res {
@@ -210,23 +240,38 @@ struct WriteQuery {
     write: bool,
 }
 
-/// Replace a slot with a payload saved earlier (`GET ...?bytes=true`).
+/// Replace a slot with a payload saved earlier (`GET ...?bytes=true`, or a
+/// backup taken before a write). Unlike the other edits, this also works on
+/// a slot that is empty or fails its checksum, such as one left behind by a
+/// failed write.
 async fn restore(st: St, Path(slot): Path<u8>, Query(q): Query<WriteQuery>, body: Bytes) -> Res {
     let new = Profile::parse(&body)?;
     if !new.checksum_ok() {
         return Err(ApiError::bad("the profile does not match its own checksum"));
     }
-    edit_slot(&st, slot, q.write, move |p| {
-        if new.schema() != p.schema() {
+    let index = slot_index(slot)?;
+    let store = st.store.clone();
+    on_keyboard(&st, move |kb| {
+        let old = kb.read_onboard_file(
+            onboard::profile_file(index),
+            onboard::Schema::B.payload_len(),
+        )?;
+        let before = Profile::parse(&old).ok().filter(Profile::checksum_ok);
+        if let Some(b) = &before
+            && b.schema() != new.schema()
+        {
             return Err(ApiError::bad(format!(
                 "the profile is schema {:?}, but the slot holds schema {:?}",
                 new.schema(),
-                p.schema()
+                b.schema()
             )));
         }
+        let changed = before.as_ref() != Some(&new);
         let change = format!("restore {:?}", new.name());
-        *p = new;
-        Ok(change)
+        let mut reply = store_slot(kb, &store, slot, &old, &new, q.write && changed, change)?;
+        reply["changed"] = json!(changed);
+        reply["before"] = json!(before.map(|b| b.summary()));
+        Ok(Json(reply))
     })
     .await
 }
