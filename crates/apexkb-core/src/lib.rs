@@ -5,6 +5,7 @@
 //! - [`keys`] maps key names to LED codes and physical positions.
 //! - [`oled`] renders text and images into 128x40 OLED frames.
 //! - [`input`] reads key presses for reactive lighting.
+//! - [`onboard`] encodes and decodes the profile slots stored in the keyboard.
 
 pub mod color;
 pub mod device;
@@ -13,6 +14,7 @@ pub mod input;
 pub mod keys;
 pub mod model;
 pub mod oled;
+pub mod onboard;
 pub mod protocol;
 
 pub use color::Rgb;

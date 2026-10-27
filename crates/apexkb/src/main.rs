@@ -4,6 +4,7 @@ mod update;
 use std::{net::SocketAddr, path::PathBuf};
 
 use anyhow::Context;
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
@@ -29,6 +30,9 @@ CONCEPTS
   The OLED (128x40, monochrome) shows one mode at a time: text, image, clock,
   sysinfo (default), blank or release. `oled notify` shows a message over it for a while.
   `profile save` stores lighting and OLED together under a name.
+
+  The keyboard also stores five profiles of its own (`onboard`): key remaps,
+  a META layer, macros and an OLED image that work with no software running.
 
 COLORS
   #rrggbb, #rgb, or a name: off black white red green blue yellow orange cyan
@@ -279,11 +283,31 @@ enum Cmd {
         #[arg(long, short, value_name = "MS")]
         blink_ms: Option<u32>,
     },
-    /// Hand lighting back to the keyboard's onboard profile.
+    /// Hand lighting back to the keyboard, or read and edit the profiles
+    /// stored in it.
     ///
-    /// Same as `effect onboard`. Any overrides stay on their keys; run
-    /// `clear` first to hand back the whole board.
-    Onboard,
+    /// Without a subcommand: same as `effect onboard`. Any overrides stay on
+    /// their keys; run `clear` first to hand back the whole board.
+    ///
+    /// The keyboard stores five profiles (slots 1-5, GG's Config 1-5) that
+    /// work with no software running: key remaps, a second layer of remaps
+    /// used while the META key is held, macros and an OLED image. Per-key
+    /// lighting is not part of them yet.
+    ///
+    /// Edits (remap, rename, oled, restore) read the slot, change only what
+    /// they are about, and show the change without writing it. Add --write
+    /// to store it: the slot's old bytes are saved under
+    /// ~/.config/apexkb/onboard/, the slot is written, read back and
+    /// compared, and the keyboard switches to it. `onboard restore` puts a
+    /// saved slot back; `onboard read SLOT --bin FILE` saves one by hand.
+    #[command(
+        args_conflicts_with_subcommands = true,
+        after_long_help = "EXAMPLES\n  apexkb onboard\n  apexkb onboard list\n  apexkb onboard read 1 --bin slot1.bin\n  apexkb onboard remap 1 capslock esc            # dry run\n  apexkb onboard remap 1 capslock esc --write\n  apexkb onboard remap 1 capslock default --write\n  apexkb onboard oled 2 cat.png --write\n  apexkb onboard select 2\n  apexkb onboard restore 1 slot1.bin --write"
+    )]
+    Onboard {
+        #[command(subcommand)]
+        cmd: Option<OnboardCmd>,
+    },
     /// Print the color each key is being sent right now.
     Frame,
     /// Control the 128x40 OLED screen.
@@ -377,6 +401,94 @@ enum OledCmd {
     Preview,
     /// Show the current OLED mode.
     Status,
+}
+
+#[derive(Subcommand)]
+enum OnboardCmd {
+    /// List the five slots by name.
+    List,
+    /// Decode a slot: name, key mappings, lighting options, macros, OLED.
+    ///
+    /// Changes nothing on the keyboard. Mappings lists every key that does
+    /// something other than type itself; stock profiles already bind the
+    /// media controls (0xf1-0xf8) and some META functions.
+    Read {
+        slot: u8,
+        /// Also save the slot's raw bytes to FILE (a backup for `restore`).
+        #[arg(long, value_name = "FILE")]
+        bin: Option<PathBuf>,
+        /// Print the stored OLED image as ASCII art.
+        #[arg(long)]
+        oled: bool,
+    },
+    /// Switch the keyboard to a slot. Stored data is not touched.
+    #[command(visible_alias = "slot")]
+    Select { slot: u8 },
+    /// Make KEY send TARGET, or `default` to make it type itself again.
+    ///
+    /// TARGET is any key name, modifiers included. A dry run unless --write.
+    Remap {
+        slot: u8,
+        key: String,
+        target: String,
+        /// Edit the layer used while the META key is held.
+        #[arg(long)]
+        meta: bool,
+        /// Store the change in the keyboard.
+        #[arg(long)]
+        write: bool,
+    },
+    /// Rename a slot (up to 23 ASCII characters). A dry run unless --write.
+    Rename {
+        slot: u8,
+        name: String,
+        /// Store the name in the keyboard.
+        #[arg(long)]
+        write: bool,
+    },
+    /// Store an image as the slot's OLED picture, shown while apexkb is not
+    /// drawing on the screen. A dry run unless --write.
+    ///
+    /// Takes the same images and options as `oled image`; an animated GIF
+    /// keeps its first frame.
+    Oled {
+        slot: u8,
+        path: PathBuf,
+        /// contain: fit inside, keep aspect; cover: fill and crop; stretch: exact 128x40.
+        #[arg(long, value_enum, default_value = "contain")]
+        fit: FitArg,
+        /// Use a plain threshold instead of Floyd-Steinberg dithering.
+        #[arg(long)]
+        no_dither: bool,
+        /// Brightness cutoff 0-255 used with --no-dither.
+        #[arg(long, default_value_t = 128)]
+        threshold: u8,
+        /// Swap black and white.
+        #[arg(long)]
+        invert: bool,
+        /// Store the image in the keyboard.
+        #[arg(long)]
+        write: bool,
+    },
+    /// Put back a slot saved with `read --bin`. A dry run unless --write.
+    Restore {
+        slot: u8,
+        file: PathBuf,
+        /// Store the saved slot in the keyboard.
+        #[arg(long)]
+        write: bool,
+    },
+    /// Read the raw bytes of an onboard file: profiles 0x0201-0x0205, or the
+    /// undecoded lighting files 0x0301-0x0305.
+    Dump {
+        file: String,
+        /// Bytes to read [default: 12288].
+        #[arg(long)]
+        len: Option<usize>,
+        /// Save to FILE instead of printing a hex dump.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -593,7 +705,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             )?,
             |_| "flashing".into(),
         ),
-        Cmd::Onboard => (c.post("/v1/lighting/effect", json!({ "type": "onboard" }))?, fmt_lighting),
+        Cmd::Onboard { cmd: None } => (c.post("/v1/lighting/effect", json!({ "type": "onboard" }))?, fmt_lighting),
+        Cmd::Onboard { cmd: Some(cmd) } => onboard(&c, cmd)?,
         Cmd::Frame => (c.get("/v1/lighting/frame")?, fmt_frame),
         Cmd::Oled(cmd) => match cmd {
             OledCmd::Text { text, align } => (
@@ -651,6 +764,267 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         println!("{}", human(&resp));
     }
     Ok(())
+}
+
+/// A response and how to print it for people.
+type Reply = (Value, fn(&Value) -> String);
+
+fn onboard(c: &Client, cmd: OnboardCmd) -> anyhow::Result<Reply> {
+    let slots = "/v1/onboard/slots";
+    Ok(match cmd {
+        OnboardCmd::List => (c.get(slots)?, fmt_onboard_list),
+        OnboardCmd::Read { slot, bin, oled } => {
+            let q = if bin.is_some() { "?bytes=true" } else { "" };
+            let resp = c.get(&format!("{slots}/{slot}{q}"))?;
+            if let Some(path) = bin {
+                let bytes = B64.decode(resp["bytes"].as_str().unwrap_or_default())?;
+                std::fs::write(&path, bytes)
+                    .with_context(|| format!("writing {}", path.display()))?;
+            }
+            (
+                resp,
+                if oled {
+                    fmt_onboard_read_oled
+                } else {
+                    fmt_onboard_read
+                },
+            )
+        }
+        OnboardCmd::Select { slot } => {
+            (c.post(&format!("{slots}/{slot}/select"), json!({}))?, |v| {
+                format!("keyboard switched to slot {}", v["selected"])
+            })
+        }
+        OnboardCmd::Remap {
+            slot,
+            key,
+            target,
+            meta,
+            write,
+        } => {
+            let layer = if meta { "meta" } else { "base" };
+            let body = json!({ "key": key, "to": target, "layer": layer, "write": write });
+            (
+                c.post(&format!("{slots}/{slot}/remap"), body)?,
+                fmt_onboard_edit,
+            )
+        }
+        OnboardCmd::Rename { slot, name, write } => (
+            c.post(
+                &format!("{slots}/{slot}/name"),
+                json!({ "name": name, "write": write }),
+            )?,
+            fmt_onboard_edit,
+        ),
+        OnboardCmd::Oled {
+            slot,
+            path,
+            fit,
+            no_dither,
+            threshold,
+            invert,
+            write,
+        } => {
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            let q = format!(
+                "{slots}/{slot}/oled?fit={}&dither={}&threshold={threshold}&invert={invert}&write={write}",
+                value_name(fit),
+                !no_dither,
+            );
+            (c.request("POST", &q, Body::Bytes(bytes))?, fmt_onboard_edit)
+        }
+        OnboardCmd::Restore { slot, file, write } => {
+            let bytes =
+                std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+            (
+                c.request(
+                    "PUT",
+                    &format!("{slots}/{slot}?write={write}"),
+                    Body::Bytes(bytes),
+                )?,
+                fmt_onboard_edit,
+            )
+        }
+        OnboardCmd::Dump { file, len, out } => {
+            let q = len.map(|l| format!("?len={l}")).unwrap_or_default();
+            let resp = c.get(&format!("/v1/onboard/files/{}{q}", urlencode(&file)))?;
+            let bytes = B64.decode(resp["bytes"].as_str().unwrap_or_default())?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, &bytes)
+                        .with_context(|| format!("writing {}", path.display()))?;
+                    (resp, |v| {
+                        format!(
+                            "saved {} bytes of file {}",
+                            v["len"],
+                            v["file"].as_str().unwrap_or("?")
+                        )
+                    })
+                }
+                None => (resp, fmt_hex_dump),
+            }
+        }
+    })
+}
+
+fn fmt_onboard_list(v: &Value) -> String {
+    v["slots"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| match s["error"].as_str() {
+            Some(e) => format!("{}  ({e})", s["slot"]),
+            None => {
+                let bad = if s["checksum_ok"] == true {
+                    ""
+                } else {
+                    "  (checksum mismatch)"
+                };
+                format!("{}  {}{bad}", s["slot"], s["name"].as_str().unwrap_or("?"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn describe_action(a: &Value) -> String {
+    let field = |k: &str| a[k].as_str().unwrap_or("?").to_string();
+    match a["type"].as_str() {
+        Some("default") => "itself".into(),
+        Some("key") => field("key"),
+        Some("combo") => a["keys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("+"),
+        Some("mouse") => format!("mouse button {}", a["button"]),
+        Some("media") => format!("media {}", field("codes")),
+        Some("meta") => format!("META function {}", field("codes")),
+        Some("macro") => format!("macro (binding {})", a["index"]),
+        _ => format!(
+            "function 0x{:02x} {}",
+            a["function"].as_u64().unwrap_or(0),
+            field("codes")
+        ),
+    }
+}
+
+fn describe_onboard(p: &Value) -> String {
+    let l = &p["lighting"];
+    let color = |k: &str| l[k].as_str().unwrap_or("?").to_string();
+    let idle = match l["idle_timeout_ms"].as_u64() {
+        Some(0) | None => "off".to_string(),
+        Some(ms) => format!("{} s", ms / 1000),
+    };
+    let checksum = if p["checksum_ok"] == true {
+        "checksum ok"
+    } else {
+        "CHECKSUM MISMATCH"
+    };
+    let mut out = format!(
+        "name: {}\nschema: {} ({checksum})\nmeta key: {}\nlighting: lock keys {}, META keys {}, disabled win key {}, idle timeout {idle}\nmacros: {}\n",
+        p["name"].as_str().unwrap_or("?"),
+        p["schema"].as_str().unwrap_or("?"),
+        p["meta_key"].as_str().unwrap_or("none"),
+        color("lock_key_color"),
+        color("meta_key_color"),
+        color("disabled_win_key_color"),
+        match p["macro_bytes"].as_u64() {
+            Some(0) | None => "none".to_string(),
+            Some(n) => format!("{n} bytes in use"),
+        },
+    );
+    let mappings: Vec<_> = p["mappings"].as_array().into_iter().flatten().collect();
+    if mappings.is_empty() {
+        out += "mappings: every key types itself";
+    } else {
+        out += "mappings:";
+        for m in mappings {
+            out += &format!(
+                "\n  {:<5} {:<12} {}",
+                m["layer"].as_str().unwrap_or("?"),
+                m["key"].as_str().unwrap_or("?"),
+                describe_action(&m["action"])
+            );
+        }
+    }
+    out
+}
+
+fn oled_ascii(p: &Value) -> Option<String> {
+    let bytes = B64.decode(p["oled"].as_str()?).ok()?;
+    Some(
+        apexkb_core::Frame::from_bytes(&bytes)?
+            .to_ascii()
+            .trim_end()
+            .to_string(),
+    )
+}
+
+fn fmt_onboard_read(v: &Value) -> String {
+    let p = &v["profile"];
+    let lit = B64
+        .decode(p["oled"].as_str().unwrap_or_default())
+        .map(|b| b.iter().map(|x| x.count_ones()).sum::<u32>())
+        .unwrap_or(0);
+    format!(
+        "slot {}\n{}\noled: {}",
+        v["slot"],
+        describe_onboard(p),
+        if lit == 0 {
+            "blank".to_string()
+        } else {
+            format!("{lit} pixels lit (--oled to show)")
+        }
+    )
+}
+
+fn fmt_onboard_read_oled(v: &Value) -> String {
+    let p = &v["profile"];
+    format!(
+        "slot {}\n{}\noled:\n{}",
+        v["slot"],
+        describe_onboard(p),
+        oled_ascii(p).unwrap_or_else(|| "?".into())
+    )
+}
+
+fn fmt_onboard_edit(v: &Value) -> String {
+    let head = format!(
+        "slot {} {:?}: {}",
+        v["slot"],
+        v["after"]["name"].as_str().unwrap_or("?"),
+        v["change"].as_str().unwrap_or("?")
+    );
+    if v["changed"] != true {
+        format!("{head}\nalready set; nothing to write")
+    } else if v["written"] == true {
+        format!(
+            "{head}\nwritten and verified; the keyboard now runs slot {}\nprevious contents saved to {}",
+            v["slot"],
+            v["backup"].as_str().unwrap_or("?")
+        )
+    } else {
+        format!("{head}\ndry run: nothing was written. Add --write to store it in the keyboard.")
+    }
+}
+
+fn fmt_hex_dump(v: &Value) -> String {
+    let bytes = B64
+        .decode(v["bytes"].as_str().unwrap_or_default())
+        .unwrap_or_default();
+    bytes
+        .chunks(16)
+        .enumerate()
+        .map(|(i, row)| {
+            let hex: Vec<_> = row.iter().map(|b| format!("{b:02x}")).collect();
+            format!("{:06x}  {}", i * 16, hex.join(" "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn urlencode(s: &str) -> String {

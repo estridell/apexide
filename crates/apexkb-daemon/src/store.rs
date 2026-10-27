@@ -2,7 +2,8 @@
 //! `$XDG_CONFIG_HOME/apexkb`.
 //!
 //! The current lighting lives in `state.json` and the OLED mode in
-//! `oled.json`, so lighting changes do not rewrite image frames.
+//! `oled.json`, so lighting changes do not rewrite image frames. Before an
+//! onboard profile slot is written, its old bytes are kept in `onboard/`.
 
 use std::{
     fs, io,
@@ -84,6 +85,17 @@ impl Store {
             fs::remove_file(&tmp).ok();
         }
         Ok(written?)
+    }
+
+    /// Keep the bytes of onboard slot `slot` (1-5) from before a write, as
+    /// a file `apexkb onboard restore` accepts. Returns its path.
+    pub fn backup_onboard(&self, slot: u8, bytes: &[u8]) -> Result<PathBuf, StoreError> {
+        let dir = self.dir.join("onboard");
+        fs::create_dir_all(&dir)?;
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
+        let path = dir.join(format!("slot{slot}-{stamp}.bin"));
+        fs::write(&path, bytes)?;
+        Ok(path)
     }
 
     fn read<T: DeserializeOwned>(path: &Path) -> Result<T, StoreError> {

@@ -35,7 +35,7 @@ use crate::{
 pub struct App {
     pub shared: Arc<Mutex<Shared>>,
     pub store: Store,
-    wake: Waker,
+    pub(crate) wake: Waker,
     /// Held from changing the settings until they are on disk, so saves
     /// land in the same order as the changes.
     saving: Arc<tokio::sync::Mutex<()>>,
@@ -47,8 +47,12 @@ pub struct App {
 pub struct ApiError(StatusCode, String);
 
 impl ApiError {
-    fn bad(msg: impl ToString) -> Self {
-        Self(StatusCode::BAD_REQUEST, msg.to_string())
+    pub(crate) fn new(code: StatusCode, msg: impl ToString) -> Self {
+        Self(code, msg.to_string())
+    }
+
+    pub(crate) fn bad(msg: impl ToString) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, msg)
     }
 }
 
@@ -76,7 +80,7 @@ impl From<keys::UnknownKey> for ApiError {
 }
 
 /// `Json` with errors reported as `{"error": ...}`.
-pub struct J<T>(T);
+pub struct J<T>(pub T);
 
 impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for J<T> {
     type Rejection = ApiError;
@@ -204,6 +208,7 @@ pub fn router(app: App) -> Router {
             get(get_profile).put(save_profile).delete(delete_profile),
         )
         .route("/v1/profiles/{name}/apply", post(apply_profile))
+        .merge(crate::onboard::routes())
         .fallback(|| async {
             ApiError(
                 StatusCode::NOT_FOUND,
@@ -615,7 +620,16 @@ pub fn schema() -> Value {
             "POST /v1/oled/notify {text, duration_ms?}",
             "GET  /v1/profiles",
             "GET|PUT|DELETE /v1/profiles/{name}",
-            "POST /v1/profiles/{name}/apply"
-        ]
+            "POST /v1/profiles/{name}/apply",
+            "GET  /v1/onboard/slots (name of each slot 1-5)",
+            "GET  /v1/onboard/slots/{slot}[?bytes=true] (decode a slot; bytes = raw payload, base64)",
+            "PUT  /v1/onboard/slots/{slot}?write=true (raw payload body: restore a saved slot)",
+            "POST /v1/onboard/slots/{slot}/select (switch the keyboard to a slot)",
+            "POST /v1/onboard/slots/{slot}/remap {key, to: key|default, layer?: base|meta, write?}",
+            "POST /v1/onboard/slots/{slot}/name {name, write?}",
+            "POST /v1/onboard/slots/{slot}/oled?write=true&fit=...&dither=...&threshold=...&invert=... (raw image body)",
+            "GET  /v1/onboard/files/{file}[?len=N] (raw bytes of file 0x0201-0x0205 or 0x0301-0x0305, base64)"
+        ],
+        "onboard": "Slots 1-5 are the profiles stored in the keyboard (GG's Config 1-5). Edits read the slot, change only what they are about, and are dry runs unless write is true; a write is read back and compared, and switches the keyboard to that slot. Rendering pauses while the keyboard is read or written (about 0.3 s per read)."
     })
 }

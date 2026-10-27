@@ -8,6 +8,10 @@
 //!
 //! A second thread ([`crate::input`]) reads key presses for the reactive
 //! layer and wakes the render thread when one arrives.
+//!
+//! Work that needs the keyboard itself, such as reading or writing an
+//! onboard profile, is sent to the render thread as a [`Job`] and runs
+//! between two frames.
 
 use std::{
     sync::{
@@ -45,18 +49,31 @@ const OLED_REFRESH_EVERY: Duration = Duration::from_millis(250);
 /// every tick, and restoring that often makes the board flicker.
 const RESTORE_EVERY: Duration = Duration::from_millis(250);
 
+/// Work that needs the keyboard. It gets `None` when no keyboard is
+/// connected. Rendering pauses while it runs.
+pub type Job = Box<dyn FnOnce(Option<&mut Keyboard>) + Send>;
+
 /// Wakes the render and input threads so they pick up a change to
 /// [`Shared`] right away instead of at their next scheduled tick.
 #[derive(Clone, Debug)]
 pub struct Waker {
     render: mpsc::Sender<()>,
     input: mpsc::Sender<()>,
+    jobs: mpsc::Sender<Job>,
 }
 
 impl Waker {
     pub fn wake(&self) {
         self.render.send(()).ok();
         self.input.send(()).ok();
+    }
+
+    /// Run `job` on the render thread. If the thread has stopped, `job` is
+    /// dropped without running.
+    pub fn run(&self, job: Job) {
+        if self.jobs.send(job).is_ok() {
+            self.render.send(()).ok();
+        }
     }
 }
 
@@ -71,11 +88,12 @@ impl Engine {
         let stop = Arc::new(AtomicBool::new(false));
         let (render_tx, render_rx) = mpsc::channel();
         let (input_tx, input_rx) = mpsc::channel();
+        let (jobs_tx, jobs_rx) = mpsc::channel();
         let render = {
             let (shared, stop, input_tx) = (shared.clone(), stop.clone(), input_tx.clone());
             thread::Builder::new()
                 .name("apexkb-render".into())
-                .spawn(move || run(shared, stop, render_rx, input_tx))
+                .spawn(move || run(shared, stop, render_rx, jobs_rx, input_tx))
                 .expect("spawn render thread")
         };
         let input = {
@@ -90,6 +108,7 @@ impl Engine {
             waker: Waker {
                 render: render_tx,
                 input: input_tx,
+                jobs: jobs_tx,
             },
             handles: vec![render, input],
         }
@@ -130,6 +149,7 @@ fn run(
     shared: Arc<Mutex<Shared>>,
     stop: Arc<AtomicBool>,
     wake: mpsc::Receiver<()>,
+    jobs: mpsc::Receiver<Job>,
     input: mpsc::Sender<()>,
 ) {
     let epoch = Instant::now();
@@ -166,6 +186,17 @@ fn run(
                     s.last_error = Some(msg);
                 }
             }
+        }
+
+        let mut ran_job = false;
+        for job in jobs.try_iter() {
+            job(kb.as_mut());
+            ran_job = true;
+        }
+        // A job may switch profiles, which changes what the board shows, so
+        // write everything again.
+        if ran_job {
+            out = Output::default();
         }
 
         if showing_sys {
