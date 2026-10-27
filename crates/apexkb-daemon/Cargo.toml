@@ -8,6 +8,7 @@ license.workspace = true
 anyhow = "1.0.104"
 apexkb-core.workspace = true
 axum = "0.8.9"
+base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["clock"] }
 embedded-graphics = "0.8.2"
 serde = { version = "1.0.229", features = ["derive"] }

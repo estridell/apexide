@@ -105,6 +105,35 @@ apexkb profile save gaming
 apexkb profile apply gaming
 ```
 
+### Onboard profiles
+
+The keyboard stores five profiles of its own (slots 1-5, GG's Config 1-5) that keep
+working with no software running: key remaps, a second layer of remaps used while the
+META (SteelSeries) key is held, macros and an OLED image. apexkb can read them, switch
+between them, and edit them:
+
+```sh
+apexkb onboard list                    # slot names
+apexkb onboard read 1                  # mappings, lighting options, macros, OLED
+apexkb onboard read 1 --bin slot1.bin  # also save the raw bytes, as a backup
+apexkb onboard select 2                # make the keyboard run slot 2
+apexkb onboard remap 1 capslock esc    # dry run: shows the change, writes nothing
+apexkb onboard remap 1 capslock esc --write
+apexkb onboard remap 1 capslock default --write     # type caps lock again
+apexkb onboard remap 1 h left --meta --write        # META layer: META+h sends left
+apexkb onboard oled 1 cat.png --write  # picture shown while apexkb is not drawing
+apexkb onboard rename 1 Gaming --write
+apexkb onboard restore 1 slot1.bin --write
+```
+
+Edits are dry runs unless `--write` is given. A write reads the slot first, changes only
+the bytes it is about (macros and anything apexkb does not decode are kept as read),
+recomputes the checksum, saves the slot's old bytes to `~/.config/apexkb/onboard/` (a file
+`onboard restore` accepts), stores the slot, reads it back to compare, and switches the
+keyboard to that slot like GG does. apexkb refuses to edit a slot that fails its own
+checksum. Per-key lighting is not stored in these profiles; `apexkb onboard dump 0x0301`
+reads the lighting files GG uses for that, which are not decoded yet.
+
 **Colors:** `#rrggbb`, `#rgb`, or names (`red`, `cyan`, `warm`, `off`, ...).
 **Key selectors:** comma or space separated names (`esc`, `f1`, `w`, `space`, `lshift`), raw
 LED codes (`0x87`), or groups (`all letters numbers fkeys wasd arrows nav modifiers numpad`).
@@ -167,8 +196,43 @@ daemon opens these only while a reactive mode is on, keeps presses in memory unt
 highlight fades, and leaves the reactive layer out of `apexkb frame`. Run
 `cargo run -p apexkb-core --example keys` to watch what the keyboard reports.
 
+### Onboard profile protocol
+
+Onboard profiles are files in the keyboard's flash: slot `n` (0-4) is file `0x0201 + n`,
+and file `0x0301 + n` holds what GG's specs call that slot's lighting config. Files move
+through a 1024-byte buffer on interface 1:
+
+| Step | Report | Frame |
+| --- | --- | --- |
+| copy a file slice into the buffer | output | `85 00`, file u16, offset u32, size u16; answered `85 01` |
+| read the buffer | feature, set then get | `83 00`, buffer offset u16, size u16; the answer has the data from byte 1 |
+| open a file for writing | output | `88 00`, file u16; answered `88 01` |
+| write the buffer | feature | `03 00`, buffer offset u16, size u16, data |
+| copy the buffer into the file | output | `05 00`, file u16, offset u32, size u16; answered `05 01` |
+| commit | output | `EB`, slot + 1 |
+| switch to a slot | output | `89`, slot + 1 (wait 250 ms after a commit) |
+
+Values are little-endian. A read is 12 copies of 1024 bytes, each read back in two 512-byte
+halves (about 0.35 s per slot). A write is GG's 122-frame sequence: open, then 40 windows
+of two buffer writes and a copy (the payload padded with zeros to 40,960 bytes), then
+commit. A profile starts with its schema word (`0x000A`, or `0x000B` from firmware 4.16.3,
+which adds Rapid Tap) and ends with an STM32 CRC-32 (polynomial `0x04C11DB7`, init
+`0xFFFFFFFF`, no reflection or final XOR, over little-endian 32-bit words). In between: the
+name at 2, lighting options at 27, the META key at 84, 128 five-byte key mappings at 85 and
+the META layer's at 735, the OLED image at 1385, then macros and a GUID. Verified on the
+Apex 7 TKL with firmware 4.1.0 (schema A): all five slots read with matching checksums,
+and remap, rename, OLED and restore writes read back byte for byte.
+
+The protocol and layout were reverse-engineered by
+[steelseriesgg-rs](https://github.com/Ven0m0/steelseriesgg-rs), which confirmed them on an
+Apex 7 with firmware 4.16.8 (schema B); see its
+[`docs/development/apex-7-gg-capture.md`](https://github.com/Ven0m0/steelseriesgg-rs/blob/main/docs/development/apex-7-gg-capture.md).
+The two boards differ in one detail: the Apex 7 TKL answers each copy with `85 01`, where
+the Apex 7 sent only an ordinary input report.
+
 LED codes are HID usage codes, plus `0xF0` for the SteelSeries/Fn key. The Apex 7 TKL does
 not answer the brightness read-back (`0xA3`), so apexkb applies brightness in software.
 
 Credits: protocol details come from [OpenRGB](https://gitlab.com/CalcProgrammer1/OpenRGB)
-and [apex-tux](https://github.com/not-jan/apex-tux).
+and [apex-tux](https://github.com/not-jan/apex-tux), and the onboard profile protocol from
+[steelseriesgg-rs](https://github.com/Ven0m0/steelseriesgg-rs).

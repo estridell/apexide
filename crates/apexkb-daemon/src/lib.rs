@@ -8,6 +8,7 @@ pub mod api;
 pub mod effects;
 pub mod engine;
 pub mod input;
+pub mod onboard;
 pub mod screen;
 pub mod state;
 pub mod store;

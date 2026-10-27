@@ -124,6 +124,25 @@ impl HidRaw {
         Ok(())
     }
 
+    /// Read a feature report into `buf`. `buf[0]` is the report number to
+    /// ask for (0 if unused); the reply overwrites the whole buffer. Returns
+    /// the number of bytes received.
+    pub fn get_feature(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // SAFETY: HIDIOCGFEATURE writes at most `buf.len()` bytes to the
+        // pointer, which the length encoded in the request matches.
+        let rc = unsafe {
+            libc::ioctl(
+                self.file.as_raw_fd(),
+                hid_ioc(0x07, buf.len()) as _,
+                buf.as_mut_ptr(),
+            )
+        };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(rc as usize)
+    }
+
     /// Read one input report, waiting at most `timeout_ms`.
     pub fn read_timeout(&mut self, buf: &mut [u8], timeout_ms: i32) -> io::Result<Option<usize>> {
         let mut pfd = libc::pollfd {

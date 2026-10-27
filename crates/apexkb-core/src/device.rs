@@ -1,4 +1,9 @@
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    path::PathBuf,
+    thread::sleep,
+    time::{Duration, Instant},
+};
 
 use serde::Serialize;
 
@@ -8,6 +13,7 @@ use crate::{
     keys::{FormFactor, KeyCode},
     model::{self, Model, STEELSERIES_VID},
     oled::Frame,
+    onboard::{self, Profile, ProfileError, WriteStep},
     protocol,
 };
 
@@ -21,9 +27,39 @@ pub enum Error {
     Permission(PathBuf),
     #[error("keyboard I/O failed: {0}")]
     Io(#[from] io::Error),
+    #[error("onboard profile: {0}")]
+    Onboard(String),
+    #[error(transparent)]
+    Profile(#[from] ProfileError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Pause after each onboard frame, as GG paces them.
+const FRAME_GAP: Duration = Duration::from_millis(5);
+/// Wait between asking for a buffer read and reading the answer; reading
+/// right away can return the buffer before the keyboard has filled it.
+const READ_SETTLE: Duration = Duration::from_millis(2);
+/// Longest wait for the answer to an open or push. GG's capture shows the
+/// open answered after about 300 ms.
+const ACK_TIMEOUT: Duration = Duration::from_secs(2);
+/// Longest wait for the answer to a pull. Some boards answer `85 01`, others
+/// (the Apex 7 in steelseriesgg-rs' capture) only send an input report.
+const PULL_TIMEOUT: Duration = Duration::from_millis(200);
+/// Wait after a commit before switching slots. GG waits 250 ms, and a switch
+/// sent right after a commit can be ignored.
+const COMMIT_SETTLE: Duration = Duration::from_millis(250);
+
+fn check_slot(slot: u8) -> Result<()> {
+    if slot >= onboard::SLOTS {
+        return Err(Error::Onboard(format!(
+            "slot {} does not exist (1-{})",
+            slot + 1,
+            onboard::SLOTS
+        )));
+    }
+    Ok(())
+}
 
 /// Static facts about a connected keyboard.
 #[derive(Clone, Debug, Serialize)]
@@ -126,6 +162,123 @@ impl Keyboard {
 
     pub fn draw_oled(&mut self, frame: &Frame) -> Result<()> {
         self.control.send_feature(&protocol::oled(frame))?;
+        Ok(())
+    }
+
+    /// Read the first `len` bytes of an onboard file. Changes nothing on
+    /// the keyboard.
+    pub fn read_onboard_file(&mut self, file: u16, len: usize) -> Result<Vec<u8>> {
+        let mut out = Vec::with_capacity(len.next_multiple_of(onboard::BUFFER_LEN));
+        for offset in (0..len).step_by(onboard::BUFFER_LEN) {
+            let pull = onboard::pull(file, offset as u32, onboard::BUFFER_LEN as u16);
+            self.onboard_output(&pull, onboard::CMD_PULL, PULL_TIMEOUT, false)?;
+            for chunk in (0..onboard::BUFFER_LEN).step_by(onboard::CHUNK_LEN) {
+                let request = onboard::read_request(chunk as u16, onboard::CHUNK_LEN as u16);
+                self.control.send_feature(&request)?;
+                sleep(READ_SETTLE);
+                let mut reply = [0u8; protocol::FEATURE_LEN + 1];
+                let n = self.control.get_feature(&mut reply)?;
+                if n < 1 + onboard::CHUNK_LEN {
+                    return Err(Error::Onboard(format!("buffer read returned {n} bytes")));
+                }
+                out.extend_from_slice(&reply[1..1 + onboard::CHUNK_LEN]);
+                sleep(FRAME_GAP);
+            }
+        }
+        out.truncate(len);
+        Ok(out)
+    }
+
+    /// Read and parse the profile in `slot` (0-4). Changes nothing on the
+    /// keyboard.
+    pub fn read_profile(&mut self, slot: u8) -> Result<Profile> {
+        check_slot(slot)?;
+        let bytes = self.read_onboard_file(
+            onboard::profile_file(slot),
+            onboard::Schema::B.payload_len(),
+        )?;
+        Ok(Profile::parse(&bytes)?)
+    }
+
+    /// Store `profile` in `slot` (0-4), then switch the keyboard to that
+    /// slot like GG does. Nothing reads the write back; read the slot again
+    /// to verify it.
+    pub fn write_profile(&mut self, slot: u8, profile: &Profile) -> Result<()> {
+        check_slot(slot)?;
+        if !profile.checksum_ok() {
+            return Err(Error::Onboard(
+                "refusing to write a profile whose checksum does not match".into(),
+            ));
+        }
+        for step in onboard::write_plan(slot, profile.bytes()) {
+            match step {
+                WriteStep::Output { report, ack } => match ack {
+                    Some(cmd) => self.onboard_output(&report, cmd, ACK_TIMEOUT, true)?,
+                    None => {
+                        self.control.write(&report)?;
+                        sleep(FRAME_GAP);
+                    }
+                },
+                WriteStep::Feature(report) => {
+                    self.control.send_feature(&report)?;
+                    sleep(FRAME_GAP);
+                }
+            }
+        }
+        sleep(COMMIT_SETTLE);
+        self.select_profile(slot)
+    }
+
+    /// Make the keyboard run the profile in `slot` (0-4). Stored data is not
+    /// touched.
+    pub fn select_profile(&mut self, slot: u8) -> Result<()> {
+        check_slot(slot)?;
+        self.control.write(&onboard::select(slot))?;
+        Ok(())
+    }
+
+    /// Send an onboard output frame and wait for the answer that starts
+    /// with `cmd`. A refusal is always an error; no answer at all is one
+    /// only if `required`, and otherwise any input report ends the wait.
+    fn onboard_output(
+        &mut self,
+        report: &[u8],
+        cmd: u8,
+        timeout: Duration,
+        required: bool,
+    ) -> Result<()> {
+        self.control.drain()?;
+        self.control.write(report)?;
+        let deadline = Instant::now() + timeout;
+        let mut buf = [0u8; protocol::OUTPUT_LEN];
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                if required {
+                    return Err(Error::Onboard(format!(
+                        "the keyboard did not answer frame 0x{cmd:02x}"
+                    )));
+                }
+                break;
+            }
+            match self
+                .control
+                .read_timeout(&mut buf, left.as_millis() as i32 + 1)?
+            {
+                Some(n) if n >= 2 && buf[0] == cmd => {
+                    if buf[1] != onboard::ACK_OK {
+                        return Err(Error::Onboard(format!(
+                            "the keyboard refused frame 0x{cmd:02x} (status 0x{:02x})",
+                            buf[1]
+                        )));
+                    }
+                    break;
+                }
+                Some(_) if !required => break,
+                _ => {}
+            }
+        }
+        sleep(FRAME_GAP);
         Ok(())
     }
 }
